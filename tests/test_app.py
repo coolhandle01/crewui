@@ -12,10 +12,12 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Callable
+from types import SimpleNamespace
+from typing import cast
 
 from textual.widgets import Input, Label, RichLog, Static
 
-from crewui.app import CrewAIPipelineTUI, _make_tui_human_input_provider
+from crewui.app import CrewAIPipelineTUI, _make_tui_human_input_provider, _TUILogHandler
 from tests.conftest import FakeCrew, FakeResult
 
 MakeCrew = Callable[..., FakeCrew]
@@ -276,3 +278,72 @@ class TestHumanInputProvider:
             == "tighten the title"
         )
         assert app._await_feedback.call_count == 2
+
+
+class TestLogHandlerDispatch:
+    """The log handler must hand every record to the app's thread-aware
+    ``_ui_dispatch`` - never call ``call_from_thread`` directly - so a record
+    emitted on the UI thread (the human-review gate) does not crash the run.
+    """
+
+    def test_agent_record_dispatched_via_ui_dispatch(self) -> None:
+        from unittest.mock import MagicMock
+
+        app = MagicMock()
+        app._record_prefix = "myapp"
+        handler = _TUILogHandler(app)
+        record = logging.LogRecord("myapp.scout", logging.INFO, __file__, 1, "hi", None, None)
+
+        handler.emit(record)
+
+        app._ui_dispatch.assert_called_once_with(app._write_agent, "hi")
+        app.call_from_thread.assert_not_called()
+
+    def test_crew_record_routed_to_crew_pane(self) -> None:
+        from unittest.mock import MagicMock
+
+        app = MagicMock()
+        app._record_prefix = "myapp"
+        handler = _TUILogHandler(app)
+        record = logging.LogRecord(
+            "urllib3.connectionpool", logging.INFO, __file__, 1, "noise", None, None
+        )
+
+        handler.emit(record)
+
+        app._ui_dispatch.assert_called_once_with(app._write_crew, "noise")
+        app.call_from_thread.assert_not_called()
+
+
+class TestUiDispatch:
+    """``_ui_dispatch`` picks the hand-off for the current thread: a caller on
+    the UI thread calls the widget method directly (``call_from_thread`` would
+    crash there), a worker-thread caller bounces through ``call_from_thread``.
+    Exercised against a light stand-in so no Textual event loop is needed.
+    """
+
+    def test_direct_call_when_on_ui_thread(self) -> None:
+        calls: list[tuple[str, str]] = []
+        stub = SimpleNamespace(
+            _ui_thread_id=threading.get_ident(),
+            call_from_thread=lambda fn, msg: calls.append(("bounced", msg)),
+        )
+
+        CrewAIPipelineTUI._ui_dispatch(
+            cast("CrewAIPipelineTUI", stub), lambda m: calls.append(("direct", m)), "hi"
+        )
+
+        assert calls == [("direct", "hi")]
+
+    def test_bounces_through_call_from_thread_when_off_ui_thread(self) -> None:
+        calls: list[tuple[str, str]] = []
+        stub = SimpleNamespace(
+            _ui_thread_id=-1,  # never matches a real thread id
+            call_from_thread=lambda fn, msg: calls.append(("bounced", msg)),
+        )
+
+        CrewAIPipelineTUI._ui_dispatch(
+            cast("CrewAIPipelineTUI", stub), lambda m: calls.append(("direct", m)), "hi"
+        )
+
+        assert calls == [("bounced", "hi")]
