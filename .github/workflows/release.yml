@@ -1,12 +1,25 @@
 name: release
 
-# Fires only on a version tag, which a human pushes via `cz bump`. Nothing here
-# runs on a normal push or pull request, so an accidental publish is not
-# reachable from ordinary development.
+# Releases are cut from this workflow, by hand-dispatch, and nowhere else.
+#
+# CI owns the version bump. A human never runs `cz bump` locally and never
+# pushes a version commit: doing so races every other merge to main, and once
+# main has moved on the only way to land that commit is a force-push. Here the
+# bump is computed on the runner from current main, and the commit and its tag
+# are pushed together, so main and the tag cannot disagree.
+#
+# Order matters: main is validated *before* anything is bumped, so a failing
+# check stops the release while the tree is still untagged. Nothing publishes on
+# an ordinary push or pull request.
 
 on:
-  push:
-    tags: ["v*"]
+  workflow_dispatch:
+
+# One release at a time - two concurrent dispatches would bump from the same
+# base and the second push would be rejected.
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -15,7 +28,7 @@ jobs:
   # A release runs the full PR gate first, by calling the very same reusable
   # workflows a pull request runs - not a copy of them. If ruff, mypy, pylint,
   # the commit-message check, the 3.10-3.13 test matrix, or the entry-point
-  # smoke test would fail on a PR, the release stops here, before build.
+  # smoke test would fail on a PR, the release stops here, before the bump.
   checks:
     name: pr checks
     uses: ./.github/workflows/meta.yml
@@ -24,12 +37,52 @@ jobs:
     name: pr tests
     uses: ./.github/workflows/tests.yml
 
+  bump:
+    name: bump version and tag
+    needs: [checks, tests]
+    runs-on: ubuntu-latest
+    permissions:
+      # Pushes the bump commit and its tag to main.
+      contents: write
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          # commitizen reads the commits since the last tag to decide the
+          # increment, so it needs the full history and the tags.
+          fetch-depth: 0
+          ref: main
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.12"
+      - run: pipx install commitizen
+      - name: identify as the actions bot
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      - id: bump
+        name: cz bump
+        # Fails when nothing since the last tag warrants a release, which is the
+        # correct outcome: there is nothing to publish.
+        run: |
+          cz bump --yes
+          echo "version=$(cz version --project)" >> "$GITHUB_OUTPUT"
+      # --follow-tags pushes the bump commit and the tag it carries in one go.
+      # If main moved while the checks were running this is rejected, and the
+      # release fails with nothing published and no tag left behind: re-dispatch.
+      - run: git push --follow-tags origin main
+
   build:
     name: build
-    needs: [checks, tests]
+    needs: bump
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          # Build the tagged commit, not the branch tip, so the artefact is
+          # exactly what the tag names even if main moves on mid-release.
+          ref: v${{ needs.bump.outputs.version }}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
         with:
           python-version: "3.12"
@@ -88,7 +141,7 @@ jobs:
 
   github-release:
     name: github release
-    needs: publish
+    needs: [bump, publish]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -102,7 +155,8 @@ jobs:
           path: dist/
       - env:
           GH_TOKEN: ${{ github.token }}
+          TAG: v${{ needs.bump.outputs.version }}
         run: >
-          gh release create "${{ github.ref_name }}" dist/*
-          --title "${{ github.ref_name }}"
+          gh release create "$TAG" dist/*
+          --title "$TAG"
           --generate-notes

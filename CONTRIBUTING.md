@@ -65,17 +65,26 @@ value, not just that nothing raised.
 
 ## Releasing
 
-Versions are derived from commit messages, not chosen by hand:
+Versions are derived from commit messages, not chosen by hand — and the bump is
+made by CI, not by you.
 
-```bash
-cz bump                  # reads commits since the last tag, decides the increment
-git push --follow-tags   # the bump commit carries the tag with it
-```
+**Run the `release` workflow from the Actions tab.** That is the whole
+procedure.
 
-Pushing a `v*` tag is the only thing that triggers `release.yml`: build,
-`twine check`, smoke-test the built wheel on 3.10 and 3.13 (both entry points
-must agree), then publish to PyPI via Trusted Publishing and cut a GitHub
-release. Nothing publishes on an ordinary push or pull request.
+Do **not** run `cz bump` locally. It writes a version commit to your `main` and
+tags it, so if `main` has moved on meanwhile that commit cannot be pushed
+without a force-push — leaving a local `main` diverged from the remote and a tag
+that is not an ancestor of either. The workflow computes the bump on the runner
+from current `main` and pushes the commit and its tag together, so the two
+cannot disagree. `cz` stays in the dev extra for `cz check` and for inspecting
+what the next version would be (`cz bump --dry-run`).
+
+Dispatching `release.yml` runs the full PR gate against `main` first — a failing
+check stops the release while the tree is still untagged — then bumps and tags,
+builds, runs `twine check`, smoke-tests the built wheel on 3.10 and 3.13 (both
+entry points must agree), publishes to PyPI via Trusted Publishing, and cuts a
+GitHub release. Nothing publishes on an ordinary push or pull request, and a
+hand-pushed tag no longer triggers anything.
 
 Do not cut the release through the GitHub UI — `release.yml` runs
 `gh release create` itself, and a hand-made release makes that step fail after
