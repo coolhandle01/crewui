@@ -60,6 +60,17 @@ fake offline crew in `tests/conftest.py` — never against a real `crewai.Crew`,
 so the suite needs no API key and makes no network call. A new code path in the
 App gets a pilot test; a new helper gets a unit test.
 
+The one exception is a path that ends in `os._exit` — the break-glass `Ctrl+Q`
+teardown in `action_quit`. It cannot run inside the pytest process (it would
+take the test runner down with it), so those lines carry `# pragma: no cover`
+and are proven instead by a *subprocess* smoke test
+(`tests/test_breakglass_smoke.py`): it drives the real app in a child
+interpreter with a run blocked in `kickoff()` plus a live child process, presses
+`Ctrl+Q`, and asserts a fast clean exit and a dead child. Do not remove the
+pragma or try to cover the hard-exit path in-process — the in-process branches
+(idle quit, terminal restore, child-kill logic with psutil mocked) are the parts
+that get pilot/unit tests.
+
 An assertion that still passes on empty output is not an assertion — check the
 value, not just that nothing raised.
 
