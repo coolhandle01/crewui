@@ -1,0 +1,72 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Callable so the release pipeline can run this exact gate before it builds -
+  # a tag exercises everything a PR does, then the release steps on top.
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # crewai caps at <3.14; 3.10 is the floor. Cover the ends and the
+        # middle so a version-specific break in either crewai or textual shows.
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    name: python ${{ matrix.python-version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -e ".[dev]"
+      # Branch coverage, not line coverage: the App is mostly branching and
+      # line coverage calls a half-tested `if` fully covered. Spelled out here
+      # rather than in addopts so the sdist's suite stays runnable with plain
+      # pytest - see the comment in pyproject.
+      - run: pytest --cov=crewui --cov-branch --cov-report=term-missing --cov-fail-under=95
+
+  smoke:
+    name: entry points install and run
+    runs-on: ubuntu-latest
+    # crewui does pull runtime dependencies (crewai, textual), so there is no
+    # zero-dependency claim to prove like oamx has. What still needs proving is
+    # that a plain install wires up both entry points and the offline demo.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.11"
+      - name: install the package
+        run: pip install .
+      - name: both entry points report the same version
+        run: |
+          script=$(crewui --version)
+          module=$(python -m crewui --version)
+          echo "console script: $script"
+          echo "python -m     : $module"
+          [ "$script" = "$module" ] || { echo "entry points disagree"; exit 1; }
+      - name: the offline demo runs headless without an API key
+        # The demo App is driven for a moment then closed; it must reach the
+        # TUI without a key or network. Textual needs a pty, so allocate one.
+        run: |
+          python - <<'PY'
+          import asyncio
+          from crewui.demo import build_demo_crew
+          from crewui.app import CrewAIPipelineTUI
+
+          async def main() -> None:
+              app = CrewAIPipelineTUI(crew=build_demo_crew(), dry_run=True)
+              async with app.run_test() as pilot:
+                  await pilot.pause(0.1)
+              print("demo App mounted and closed cleanly")
+
+          asyncio.run(main())
+          PY

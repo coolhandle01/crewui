@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or usage help
+    url: https://github.com/coolhandle01/crewui/discussions
+    about: For "how do I..." and open-ended questions, start a discussion rather than filing an issue.
+  - name: Report a security vulnerability
+    url: https://github.com/coolhandle01/crewui/security/advisories/new
+    about: Disclose vulnerabilities privately via GitHub's private reporting. Please do not file a public issue for a security bug.

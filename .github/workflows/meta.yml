@@ -1,0 +1,74 @@
+name: meta
+
+# Checks on the repository itself rather than on crewui's behaviour. The tool's
+# own suite lives in tests.yml.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Callable so the release pipeline can run this exact gate before it builds -
+  # a tag exercises everything a PR does, then the release steps on top.
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  # Every tool version comes from the `dev` extra in pyproject, so what CI runs
+  # and what CONTRIBUTING tells you to run cannot drift apart.
+  lint:
+    name: ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - run: ruff check .
+
+  types:
+    name: mypy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          # The floor, not the newest: strict mode against 3.10 is what
+          # `python_version` in [tool.mypy] pins, and a newer interpreter would
+          # quietly accept syntax the floor rejects.
+          python-version: "3.10"
+      - run: pip install -e ".[dev]"
+      - run: mypy
+
+  design:
+    name: pylint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      # Ruff owns style; pylint is gated on a score for the design checks.
+      - run: pylint crewui
+
+  commits:
+    name: commit messages
+    runs-on: ubuntu-latest
+    # Only meaningful on a pull request, where there is a base to diff against.
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          # cz needs the real history to walk the range, not a shallow clone.
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.12"
+      - run: pipx install commitizen
+      - name: conventional commits
+        run: >
+          cz check --rev-range
+          ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}

@@ -1,0 +1,108 @@
+name: release
+
+# Fires only on a version tag, which a human pushes via `cz bump`. Nothing here
+# runs on a normal push or pull request, so an accidental publish is not
+# reachable from ordinary development.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  # A release runs the full PR gate first, by calling the very same reusable
+  # workflows a pull request runs - not a copy of them. If ruff, mypy, pylint,
+  # the commit-message check, the 3.10-3.13 test matrix, or the entry-point
+  # smoke test would fail on a PR, the release stops here, before build.
+  checks:
+    name: pr checks
+    uses: ./.github/workflows/meta.yml
+
+  tests:
+    name: pr tests
+    uses: ./.github/workflows/tests.yml
+
+  build:
+    name: build
+    needs: [checks, tests]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.12"
+      - run: pipx run build
+      # Refuse to ship metadata PyPI would reject, before anything is uploaded.
+      - run: pipx run twine check dist/*
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: dist
+          path: dist/
+
+  smoke:
+    name: smoke test the wheel
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.13"]
+    steps:
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
+        with:
+          name: dist
+          path: dist/
+      # The suite runs from a source checkout; this proves the *built artefact*
+      # installs and that both entry points are wired up. They are separate
+      # paths - the console script goes through [project.scripts] to
+      # crewui.cli:main, `python -m` through crewui/__main__.py - so a wheel can
+      # ship one working and the other broken.
+      - run: pip install dist/*.whl
+      - name: both entry points agree
+        run: |
+          script=$(crewui --version)
+          module=$(python -m crewui --version)
+          echo "console script: $script"
+          echo "python -m     : $module"
+          [ "$script" = "$module" ] || { echo "entry points disagree"; exit 1; }
+
+  publish:
+    name: publish to PyPI
+    needs: smoke
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      # Trusted Publishing: PyPI verifies this workflow's OIDC identity, so
+      # there is no long-lived API token stored in the repository.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247  # release/v1
+
+  github-release:
+    name: github release
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
+        with:
+          name: dist
+          path: dist/
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "${{ github.ref_name }}" dist/*
+          --title "${{ github.ref_name }}"
+          --generate-notes
