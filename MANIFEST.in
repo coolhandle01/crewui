@@ -1,0 +1,7 @@
+# Ship the suite and docs so a downstream packager can verify the build they
+# are shipping, rather than taking our word for it or fetching from git.
+include README.md CONTRIBUTING.md LICENSE
+recursive-include tests *.py
+# The default stylesheet is package data (see pyproject), but spell it out here
+# too so the sdist carries it even if package-data handling changes.
+recursive-include crewui *.tcss py.typed
