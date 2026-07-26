@@ -23,11 +23,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from crewai import Crew
-from textual import work
+from rich.panel import Panel
+from textual import events, work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
-from textual.widgets import Input, Label, RichLog, Static
+from textual.message import Message
+from textual.widgets import Label, RichLog, Static, TextArea
 
 from crewui._helpers import (
     dispatch_on_ui_thread,
@@ -41,6 +43,43 @@ if TYPE_CHECKING:
     from crewai.core.providers.human_input import SyncHumanInputProvider
 
 logger = logging.getLogger(__name__)
+
+
+class FeedbackArea(TextArea):
+    """Multi-line human-review input for the feedback gate.
+
+    Enter submits, matching CrewAI's out-of-the-box feedback prompt; Ctrl+J or
+    Shift+Enter inserts a newline for multi-paragraph feedback. This inverts
+    TextArea's default (where Enter inserts the newline). An empty submit
+    accepts the result as-is, per CrewAI's feedback loop.
+
+    Ctrl+J is the portable newline: it is a raw line-feed byte, so it reaches
+    the app on every terminal. Shift+Enter only arrives on terminals whose
+    keyboard protocol distinguishes it from Enter (not Windows Terminal / WSL,
+    for example); where it does not, Ctrl+J still works and Enter still submits.
+    """
+
+    _NEWLINE_KEYS = frozenset({"ctrl+j", "shift+enter"})
+
+    class Submitted(Message):
+        """Posted when the operator submits their feedback with Enter."""
+
+        def __init__(self, value: str) -> None:
+            self.value = value
+            super().__init__()
+
+    async def _on_key(self, event: events.Key) -> None:
+        if event.key == "enter":
+            event.stop()
+            event.prevent_default()
+            self.post_message(self.Submitted(self.text))
+            return
+        if event.key in self._NEWLINE_KEYS:
+            event.stop()
+            event.prevent_default()
+            self.insert("\n")
+            return
+        await super()._on_key(event)
 
 
 class CrewAIPipelineTUI(App[None]):
@@ -100,10 +139,13 @@ class CrewAIPipelineTUI(App[None]):
                 with Vertical(id="messages-pane"):
                     yield Label("Agent Output", classes="pane-title")
                     yield RichLog(id="agent-log", highlight=True, markup=True, wrap=True)
-                    yield Input(
-                        placeholder="Human review (idle)",
-                        disabled=True,
+                    yield FeedbackArea(
+                        "",
                         id="human-input",
+                        soft_wrap=True,
+                        show_line_numbers=False,
+                        disabled=True,
+                        placeholder="Human review (idle)",
                     )
                 with Vertical(id="logs-pane"):
                     yield Label("Pipeline Logs", id="logs-title", classes="pane-title")
@@ -275,21 +317,38 @@ class CrewAIPipelineTUI(App[None]):
         return self._feedback_value
 
     def _open_feedback_gate(self) -> None:
-        self._write_agent(
-            "[bold yellow]Human review requested - reply below (Enter to accept).[/bold yellow]"
-        )
-        inp = self.query_one("#human-input", Input)
-        inp.placeholder = "Your feedback - Enter to accept, or type changes"
+        try:
+            log = self.query_one("#agent-log", RichLog)
+        except NoMatches:
+            logger.debug("agent-log widget not mounted, cannot open feedback gate")
+        else:
+            # A blank line sets the review prompt apart from the streamed output
+            # above it, then a bordered panel makes the gate unmissable.
+            log.write("")
+            log.write(
+                Panel(
+                    "Review the result above.\n\n"
+                    "Type your feedback, then press Enter to submit "
+                    "(Ctrl+J for a newline).\n"
+                    "Submit an empty box to accept the result as-is.",
+                    title="Human Review Requested",
+                    border_style="yellow",
+                    padding=(1, 2),
+                )
+            )
+        inp = self.query_one("#human-input", FeedbackArea)
+        inp.placeholder = "Enter submits - Ctrl+J for a newline - empty accepts"
         inp.disabled = False
         inp.focus()
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        if event.input.id != "human-input" or self._feedback_event is None:
+    def on_feedback_area_submitted(self, event: FeedbackArea.Submitted) -> None:
+        if self._feedback_event is None:
             return
         self._feedback_value = event.value
-        event.input.value = ""
-        event.input.disabled = True
-        event.input.placeholder = "Human review (idle)"
+        inp = self.query_one("#human-input", FeedbackArea)
+        inp.text = ""
+        inp.disabled = True
+        inp.placeholder = "Human review (idle)"
         self._feedback_event.set()
 
 

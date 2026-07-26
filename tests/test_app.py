@@ -15,9 +15,14 @@ from collections.abc import Callable
 from types import SimpleNamespace
 from typing import cast
 
-from textual.widgets import Input, Label, RichLog, Static
+from textual.widgets import Label, RichLog, Static
 
-from crewui.app import CrewAIPipelineTUI, _make_tui_human_input_provider, _TUILogHandler
+from crewui.app import (
+    CrewAIPipelineTUI,
+    FeedbackArea,
+    _make_tui_human_input_provider,
+    _TUILogHandler,
+)
 from tests.conftest import FakeCrew, FakeResult
 
 MakeCrew = Callable[..., FakeCrew]
@@ -159,6 +164,12 @@ class TestErrorPath:
 
 
 class TestHumanReview:
+    """The gate is a multi-line ``FeedbackArea``: Enter submits, Ctrl+J and
+    Shift+Enter insert a newline, and an empty submit accepts as-is. Each path
+    is driven end to end through the worker-thread bridge so the value the
+    operator actually gets back is asserted, not just that nothing raised.
+    """
+
     async def test_feedback_gate_opens_and_submit_returns_value(
         self, make_crew: MakeCrew
     ) -> None:
@@ -172,25 +183,117 @@ class TestHumanReview:
             worker = threading.Thread(target=ask)
             worker.start()
             # The gate opens on the UI thread; wait for the input to enable.
-            inp = app.query_one("#human-input", Input)
+            inp = app.query_one("#human-input", FeedbackArea)
             assert await _wait_for(pilot, lambda: not inp.disabled)
             inp.focus()
             await pilot.press(*"tighten it")
             await pilot.press("enter")
             worker.join(timeout=2)
             assert captured == ["tighten it"]
-            # The gate closes again after submission.
+            # The gate closes again after submission, cleared for the next round.
             assert inp.disabled
+            assert inp.text == ""
+
+    async def test_empty_submit_accepts_the_result_as_is(self, make_crew: MakeCrew) -> None:
+        app = CrewAIPipelineTUI(crew=make_crew())
+        async with app.run_test() as pilot:
+            captured: list[str] = []
+
+            def ask() -> None:
+                captured.append(app._await_feedback())
+
+            worker = threading.Thread(target=ask)
+            worker.start()
+            inp = app.query_one("#human-input", FeedbackArea)
+            assert await _wait_for(pilot, lambda: not inp.disabled)
+            inp.focus()
+            # Enter on an empty box means "accept" - an empty value comes back.
+            await pilot.press("enter")
+            worker.join(timeout=2)
+            assert captured == [""]
+            assert inp.disabled
+
+    async def test_ctrl_j_inserts_newline_and_full_value_submits(
+        self, make_crew: MakeCrew
+    ) -> None:
+        app = CrewAIPipelineTUI(crew=make_crew())
+        async with app.run_test() as pilot:
+            captured: list[str] = []
+
+            def ask() -> None:
+                captured.append(app._await_feedback())
+
+            worker = threading.Thread(target=ask)
+            worker.start()
+            inp = app.query_one("#human-input", FeedbackArea)
+            assert await _wait_for(pilot, lambda: not inp.disabled)
+            inp.focus()
+            await pilot.press(*"line one")
+            # Ctrl+J adds a newline instead of submitting - the gate stays open.
+            await pilot.press("ctrl+j")
+            await pilot.press(*"line two")
+            await pilot.pause(0.05)
+            assert captured == []
+            assert not inp.disabled
+            assert inp.text == "line one\nline two"
+            # Enter now submits the whole multi-line value.
+            await pilot.press("enter")
+            worker.join(timeout=2)
+            assert captured == ["line one\nline two"]
+            assert inp.disabled
+
+    async def test_shift_enter_inserts_newline_without_submitting(
+        self, make_crew: MakeCrew
+    ) -> None:
+        app = CrewAIPipelineTUI(crew=make_crew())
+        async with app.run_test() as pilot:
+            captured: list[str] = []
+
+            def ask() -> None:
+                captured.append(app._await_feedback())
+
+            worker = threading.Thread(target=ask)
+            worker.start()
+            inp = app.query_one("#human-input", FeedbackArea)
+            assert await _wait_for(pilot, lambda: not inp.disabled)
+            inp.focus()
+            await pilot.press(*"a")
+            await pilot.press("shift+enter")
+            await pilot.press(*"b")
+            await pilot.pause(0.05)
+            # No submit fired; the newline landed between the two characters.
+            assert captured == []
+            assert not inp.disabled
+            assert inp.text == "a\nb"
+            # Clean up the parked worker so it does not outlive the test.
+            await pilot.press("enter")
+            worker.join(timeout=2)
+
+    async def test_open_gate_without_agent_log_still_enables_input(
+        self, make_crew: MakeCrew
+    ) -> None:
+        app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
+        async with app.run_test() as pilot:
+            # Remove the agent-log pane, then open the gate: the panel write is
+            # skipped (NoMatches) but the input must still enable and focus.
+            await app.query_one("#agent-log", RichLog).remove()
+            await pilot.pause(0.02)
+            app._open_feedback_gate()
+            inp = app.query_one("#human-input", FeedbackArea)
+            assert not inp.disabled
 
     async def test_submit_without_open_gate_is_ignored(self, make_crew: MakeCrew) -> None:
         app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
         async with app.run_test() as pilot:
-            inp = app.query_one("#human-input", Input)
-            inp.value = "stray"
+            inp = app.query_one("#human-input", FeedbackArea)
+            inp.text = "stray"
             inp.disabled = False
-            # No feedback event is pending, so submitting must be a no-op.
-            await inp.action_submit()
+            inp.focus()
+            # No feedback event is pending, so the submit handler returns early
+            # and leaves the box as-is.
+            await pilot.press("enter")
             await pilot.pause(0.05)
+            assert inp.text == "stray"
 
 
 class TestLogHandler:
