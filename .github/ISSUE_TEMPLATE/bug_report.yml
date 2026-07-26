@@ -1,0 +1,70 @@
+name: Bug report
+description: Report a defect in crewui so it can be reproduced and fixed.
+title: "fix: <short summary of the bug>"
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. Fields marked required must be filled in before
+        the form will submit.
+
+        crewui renders a CrewAI crew in a Textual TUI. A lot of "crewui bugs"
+        turn out to be crewai or textual behaviour surfacing through the TUI, so
+        the version fields below and a minimal reproduction matter a great deal.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One or two sentences describing what is wrong.
+      placeholder: The sidebar never marks the final task "Done" when the crew has a single task.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: The minimal sequence that triggers the bug. If you can reproduce it with `crewui demo`, say so - that rules out your crew's construction. Otherwise, the smallest crew that shows it.
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs actual behaviour
+      description: What you expected to happen, and what actually happened. Paste any traceback in full.
+    validations:
+      required: true
+  - type: input
+    id: crewui-version
+    attributes:
+      label: crewui version
+      description: Output of `crewui --version`, or the commit if installed from source.
+    validations:
+      required: true
+  - type: input
+    id: dep-versions
+    attributes:
+      label: crewai and textual versions
+      description: "Output of `pip show crewai textual | grep -E '^(Name|Version)'`. crewui's one internal seam is crewai's human-input provider, so the crewai version is often the deciding detail."
+    validations:
+      required: true
+  - type: input
+    id: python-version
+    attributes:
+      label: Python version and OS
+      description: crewui targets Python 3.10-3.13 (see CONTRIBUTING.md). Terminal emulator too, if the bug is visual.
+    validations:
+      required: false
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: This reproduces against stock crewai (not a fork-specific behaviour), or I have said which fork I am pinning.
+          required: false

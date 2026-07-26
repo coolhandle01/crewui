@@ -1,0 +1,56 @@
+name: Feature request
+description: Propose a new capability or enhancement.
+title: "feat: <short description of the feature>"
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing, a quick gut-check from CONTRIBUTING.md: crewui **reads a
+        `Crew` and renders it**, and nothing else. Anything host-specific - a run
+        id, metrics, pricing, persistence - is meant to be an injected callback
+        (`on_start` / `on_complete` / `get_token_cost`), not code in this package,
+        and there are deliberately only two runtime dependencies. A request that
+        fits that shape moves fast; one that asks crewui to know about your
+        application usually wants a callback instead.
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: What problem does this solve, and for whom? Describe the gap, not the solution.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How you imagine it working. If it needs host-specific behaviour, say whether an existing callback could carry it, or whether a new extension point is genuinely needed.
+    validations:
+      required: false
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: The checklist that, when every item is ticked, means this is done. Concrete enough that a reviewer can verify each item.
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+    validations:
+      required: true
+  - type: textarea
+    id: dependency-impact
+    attributes:
+      label: Dependency impact
+      description: Does this need anything beyond crewai and textual? If yes, make the case - the two-dependency promise is a deliberate constraint, not an oversight.
+      placeholder: No new dependency. / Would need <X> because <reason>.
+    validations:
+      required: false
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: This keeps crewui a presentation layer (host-specific logic stays behind a callback), or I have explained why it cannot.
+          required: false
