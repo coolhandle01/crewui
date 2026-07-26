@@ -10,16 +10,40 @@ readme = "README.md"
 requires-python = ">=3.10,<3.14"
 license = "MIT"
 license-files = ["LICENSE"]
-keywords = ["crewai", "textual", "tui", "terminal", "agents", "pipeline"]
+keywords = [
+    "crewai",
+    "crewai-tools",
+    "textual",
+    "tui",
+    "terminal",
+    "console",
+    "ai-agents",
+    "agentic",
+    "pipeline",
+    "observability",
+    "monitoring",
+]
 authors = [{ name = "Nathan Bottomley-Cook" }]
+# No "License :: OSI Approved ::" classifier: the SPDX `license` field above is
+# the modern source of truth, and setuptools>=77 rejects pairing the two. Per-
+# version Python classifiers are a promise - they match the tests.yml matrix
+# (3.10-3.13) exactly. "Typing :: Typed" is earned by the shipped py.typed.
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
     "Framework :: AsyncIO",
     "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: User Interfaces",
+    "Topic :: System :: Monitoring",
     "Topic :: Terminals",
+    "Typing :: Typed",
 ]
 
 # Two runtime dependencies, and only two. crewui is a thin presentation layer:
