@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from crewai.agents.parser import AgentAction, AgentFinish
 
 from crewui._helpers import (
+    dispatch_on_ui_thread,
     format_metrics_block,
     format_step_message,
     route_log_record,
@@ -53,6 +54,24 @@ class TestRouteLogRecord:
     def test_empty_prefix_routes_everything_to_agent(self) -> None:
         # Every string starts with "" so the prefix-empty case lands on agent.
         assert route_log_record("anything", "") == "agent"
+
+
+class TestDispatchOnUiThread:
+    """Guards the human-review-gate crash: a log record emitted while already
+    on the UI thread must dispatch directly, because Textual's
+    ``call_from_thread`` refuses same-thread calls."""
+
+    def test_same_thread_dispatches_directly(self) -> None:
+        # Caller thread == the app's captured UI thread -> call fn directly.
+        assert dispatch_on_ui_thread(42, 42) is True
+
+    def test_worker_thread_uses_call_from_thread(self) -> None:
+        # Caller thread != UI thread (a worker) -> bounce via call_from_thread.
+        assert dispatch_on_ui_thread(7, 42) is False
+
+    def test_unmounted_app_uses_call_from_thread(self) -> None:
+        # Before on_mount captures the id there is no UI-thread code running.
+        assert dispatch_on_ui_thread(42, None) is False
 
 
 def _task(name: str | None, role: str | None) -> SimpleNamespace:
@@ -121,11 +140,13 @@ class TestFormatStepMessage:
         # result clipped to 300 chars inside [dim]...[/dim]
         assert msg.endswith("[dim]" + "y" * 300 + "[/dim]")
 
-    def test_agent_finish_returns_answer_prefixed_truncation(self) -> None:
+    def test_agent_finish_returns_answer_in_full(self) -> None:
+        # The answer is the operator's review target at a human_input gate, so
+        # it is rendered in full - not clipped like intermediate tool progress.
         finish = AgentFinish(thought="done", output="y" * 700, text="t")
         msg = format_step_message(finish)
         assert msg.startswith("[bold green]Answer:[/bold green] ")
-        assert msg.count("y") == 500
+        assert msg.count("y") == 700
 
     def test_other_step_type_returns_truncated_repr(self) -> None:
         msg = format_step_message("random output " + "z" * 500)

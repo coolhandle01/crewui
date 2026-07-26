@@ -31,6 +31,22 @@ def route_log_record(record_name: str, prefix: str) -> str:
     return "agent" if record_name.startswith(prefix) else "crew"
 
 
+def dispatch_on_ui_thread(current_thread_id: int, ui_thread_id: int | None) -> bool:
+    """Decide whether a UI update must be called directly rather than via
+    ``call_from_thread``.
+
+    Textual's ``call_from_thread`` hard-refuses when invoked from the app's own
+    thread, so a log record emitted *during* a UI-thread callback (the
+    human-review gate opens the input box, which can itself log) must call the
+    widget method directly instead of bouncing back through the worker bridge.
+
+    Returns ``True`` when the caller is already on the UI thread. ``ui_thread_id``
+    is ``None`` until the app has mounted and captured its thread id; before then
+    no code runs on the UI thread, so the answer is ``False``.
+    """
+    return ui_thread_id is not None and current_thread_id == ui_thread_id
+
+
 def task_layout(tasks: list[Any]) -> list[tuple[str, str]]:
     """Build the sidebar entries for a sequential pipeline.
 
@@ -62,10 +78,14 @@ def format_step_message(step: object) -> str:
     """Format a CrewAI step (AgentAction / AgentFinish / other) as rich-text.
 
     AgentAction yields a Thought + tool-call line and an optional result block.
-    AgentFinish yields an Answer line. Anything else is rendered as its
-    truncated ``str()``. Trusts the crewai parser types - the caller's
-    callback is responsible for swallowing any unexpected exceptions, since
-    the step-callback contract is fire-and-forget telemetry.
+    AgentFinish yields an Answer line rendered in full - it is the operator's
+    review target at a human_input gate (and the final deliverable), so it must
+    be completely visible; the RichLog scrolls, so the review target is not
+    clipped. Only the intermediate tool progress (inputs, tool results) stays
+    capped. Anything else is rendered as its truncated ``str()``. Trusts the
+    crewai parser types - the caller's callback is responsible for swallowing
+    any unexpected exceptions, since the step-callback contract is
+    fire-and-forget telemetry.
     """
     if isinstance(step, AgentAction):
         tool_call = f"[cyan]> {step.tool}[/cyan]({truncate(step.tool_input, 120)})"
@@ -74,5 +94,5 @@ def format_step_message(step: object) -> str:
             msg += f"\n[dim]{truncate(step.result, 300)}[/dim]"
         return msg
     if isinstance(step, AgentFinish):
-        return f"[bold green]Answer:[/bold green] {truncate(str(step.output), 500)}"
+        return f"[bold green]Answer:[/bold green] {step.output}"
     return truncate(str(step), 300)

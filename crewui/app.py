@@ -30,11 +30,11 @@ from textual.css.query import NoMatches
 from textual.widgets import Input, Label, RichLog, Static
 
 from crewui._helpers import (
+    dispatch_on_ui_thread,
     format_metrics_block,
     format_step_message,
     route_log_record,
     task_layout,
-    truncate,
 )
 
 if TYPE_CHECKING:
@@ -75,6 +75,10 @@ class CrewAIPipelineTUI(App[None]):
         self._feedback_event: threading.Event | None = None
         self._feedback_value: str = ""
         self._log_handler: _TUILogHandler | None = None
+        # Captured in on_mount (which runs on the UI thread). Lets log records
+        # emitted during a UI-thread callback dispatch directly instead of
+        # bouncing through call_from_thread, which refuses same-thread calls.
+        self._ui_thread_id: int | None = None
         self._crew.step_callback = self._make_step_callback()
 
     def compose(self) -> ComposeResult:
@@ -106,6 +110,9 @@ class CrewAIPipelineTUI(App[None]):
                     yield RichLog(id="crew-log", highlight=True, markup=True)
 
     def on_mount(self) -> None:
+        # Capture the UI thread id before the log handler is registered, so no
+        # record can route (and consult _ui_dispatch) before it is set.
+        self._ui_thread_id = threading.get_ident()
         # Held so on_unmount can detach it. A handler left on the root logger
         # after the app stops would route later records through call_from_thread
         # into a dead app - harmless in a one-shot CLI, a leak anywhere the host
@@ -197,7 +204,9 @@ class CrewAIPipelineTUI(App[None]):
     def _on_done(self, result: object) -> None:
         raw = getattr(result, "raw", str(result))
         self._write_agent("[bold green]Pipeline complete.[/bold green]")
-        self._write_agent(truncate(raw, 2000))
+        # Full result, not truncated: this is the final deliverable and the
+        # RichLog scrolls, so there is no reason to clip it.
+        self._write_agent(raw)
 
         # Hand the result to the host for persistence; a save failure must not
         # take the UI down, so swallow and surface it in the pipeline log.
@@ -236,6 +245,19 @@ class CrewAIPipelineTUI(App[None]):
             self.query_one("#crew-log", RichLog).write(msg)
         except NoMatches:
             logger.debug("crew-log widget not mounted, dropping message")
+
+    def _ui_dispatch(self, fn: Callable[[str], None], msg: str) -> None:
+        """Run a UI update, from either the worker thread or the UI thread.
+
+        Worker-thread updates go through ``call_from_thread``; a caller already
+        on the UI thread (a log record emitted inside a UI callback) calls
+        ``fn`` directly, because ``call_from_thread`` raises when invoked from
+        the app thread.
+        """
+        if dispatch_on_ui_thread(threading.get_ident(), self._ui_thread_id):
+            fn(msg)
+        else:
+            self.call_from_thread(fn, msg)
 
     # -- human review --
 
@@ -302,7 +324,12 @@ class _TUILogHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         msg = self.format(record)
         target = route_log_record(record.name, self._app._record_prefix)
+        # A record can be emitted from the worker thread (during kickoff) or
+        # from the UI thread (a widget callback that logs) - _ui_dispatch picks
+        # the right hand-off for the current thread. The human-review gate is
+        # the UI-thread case: opening the input box logs, and a naive
+        # call_from_thread there would crash the run.
         if target == "agent":
-            self._app.call_from_thread(self._app._write_agent, msg)
+            self._app._ui_dispatch(self._app._write_agent, msg)
         else:
-            self._app.call_from_thread(self._app._write_crew, msg)
+            self._app._ui_dispatch(self._app._write_crew, msg)
