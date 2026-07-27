@@ -87,10 +87,12 @@ class TestRun:
     async def test_successful_run_marks_all_tasks_done(self, make_crew: MakeCrew) -> None:
         app = CrewAIPipelineTUI(crew=make_crew(), get_token_cost=lambda i, o: 0.5)
         async with app.run_test() as pilot:
-            done = await _wait_for(
-                pilot, lambda: _statuses(app) == ["Done", "Done", "Done"]
-            )
-            assert done
+            # Wait on the metrics, not the statuses. The last task callback marks
+            # the sidebar Done, but the metrics land in a later call_from_thread
+            # (_on_done), so waiting for "Done" can observe the run in between
+            # and read an empty block. Waiting for the metrics implies both.
+            assert await _wait_for(pilot, lambda: " Tokens:  140" in _metrics(app))
+            assert _statuses(app) == ["Done", "Done", "Done"]
             block = _metrics(app)
             assert " Tokens:  140" in block
             assert " Cost:    $0.5000" in block
