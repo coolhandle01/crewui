@@ -65,8 +65,6 @@ value, not just that nothing raised.
 
 ## Releasing
 
-**There is no release procedure. Merge your PR.**
-
 Versions are derived from commit messages, not chosen by hand, and the bump is
 made by CI. `bumpversion.yml` runs on every merge to `main`: if the commits
 since the last tag warrant a release, commitizen bumps the version, updates
