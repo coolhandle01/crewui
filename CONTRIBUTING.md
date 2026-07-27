@@ -65,17 +65,31 @@ value, not just that nothing raised.
 
 ## Releasing
 
-Versions are derived from commit messages, not chosen by hand:
+**There is no release procedure. Merge your PR.**
 
-```bash
-cz bump                  # reads commits since the last tag, decides the increment
-git push --follow-tags   # the bump commit carries the tag with it
-```
+Versions are derived from commit messages, not chosen by hand, and the bump is
+made by CI. `bumpversion.yml` runs on every merge to `main`: if the commits
+since the last tag warrant a release, commitizen bumps the version, updates
+`CHANGELOG.md` and the version files, commits as `bump: ...`, and pushes the
+commit and its tag. If nothing warrants a release, it does nothing.
 
-Pushing a `v*` tag is the only thing that triggers `release.yml`: build,
+**Never run `cz bump` yourself.** It writes a version commit to your local
+`main` and tags it, so the moment `main` has moved on that commit can only be
+landed with a force-push — leaving a local `main` diverged from the remote and a
+tag that is not an ancestor of either. `cz` stays in the dev extra for `cz check`
+and for previewing what the next version would be (`cz bump --dry-run`).
+
+The tag `bumpversion.yml` pushes is what triggers `release.yml`: build,
 `twine check`, smoke-test the built wheel on 3.10 and 3.13 (both entry points
 must agree), then publish to PyPI via Trusted Publishing and cut a GitHub
 release. Nothing publishes on an ordinary push or pull request.
+
+That chaining is why the bump authenticates as a **GitHub App** rather than with
+the default `GITHUB_TOKEN`: GitHub deliberately does not fire workflows for
+pushes made with `GITHUB_TOKEN`, so a tag pushed that way would never trigger
+`release.yml`. The App needs `Contents: read and write`, installed on this
+repository, with its id in the `APP_ID` variable and its private key in the
+`APP_PRIVATE_KEY` secret.
 
 Do not cut the release through the GitHub UI — `release.yml` runs
 `gh release create` itself, and a hand-made release makes that step fail after
