@@ -77,10 +77,6 @@ jobs:
       # conventional commits can still land on main as a non-conventional one,
       # which bumpversion.yml cannot read - so the release silently never happens.
       - name: conventional pull request title
-        # Redundant with the job guard today, deliberately: there is no title to
-        # check outside a pull request, so if that guard is ever loosened this
-        # step opts itself out rather than failing on an empty string.
-        if: github.event_name == 'pull_request'
         env:
           # Through the environment rather than interpolated into the script: the
           # title is user-controlled text, and inlining it into `run` would be a
