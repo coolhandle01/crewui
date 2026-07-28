@@ -15,6 +15,7 @@ from collections.abc import Callable
 from types import SimpleNamespace
 from typing import cast
 
+import psutil
 from textual.widgets import Input, Label, RichLog, Static
 
 from crewui.app import CrewAIPipelineTUI, _make_tui_human_input_provider, _TUILogHandler
@@ -86,10 +87,12 @@ class TestRun:
     async def test_successful_run_marks_all_tasks_done(self, make_crew: MakeCrew) -> None:
         app = CrewAIPipelineTUI(crew=make_crew(), get_token_cost=lambda i, o: 0.5)
         async with app.run_test() as pilot:
-            done = await _wait_for(
-                pilot, lambda: _statuses(app) == ["Done", "Done", "Done"]
-            )
-            assert done
+            # Wait on the metrics, not the statuses. The last task callback marks
+            # the sidebar Done, but the metrics land in a later call_from_thread
+            # (_on_done), so waiting for "Done" can observe the run in between
+            # and read an empty block. Waiting for the metrics implies both.
+            assert await _wait_for(pilot, lambda: " Tokens:  140" in _metrics(app))
+            assert _statuses(app) == ["Done", "Done", "Done"]
             block = _metrics(app)
             assert " Tokens:  140" in block
             assert " Cost:    $0.5000" in block
@@ -347,3 +350,83 @@ class TestUiDispatch:
         )
 
         assert calls == [("bounced", "hi")]
+
+
+class _FakeProc:
+    """Stand-in for a psutil.Process child; records terminate/kill and can
+    raise psutil.Error to exercise the swallow branches."""
+
+    def __init__(self, raises: bool = False) -> None:
+        self.raises = raises
+        self.terminated = False
+        self.killed = False
+
+    def terminate(self) -> None:
+        if self.raises:
+            raise psutil.NoSuchProcess(1)
+        self.terminated = True
+
+    def kill(self) -> None:
+        if self.raises:
+            raise psutil.NoSuchProcess(1)
+        self.killed = True
+
+
+class TestBreakGlass:
+    """Ctrl+Q teardown. The in-flight hard-exit path ends in os._exit and is
+    unreachable in-process (pragma: no cover) - it is proven by the subprocess
+    smoke test in test_breakglass_smoke.py. Here we cover the branches that do
+    run in-process: the graceful idle quit, terminal restore, and the
+    child-kill logic (with psutil mocked so nothing is actually signalled)."""
+
+    async def test_quit_is_graceful_when_idle(self, make_crew: MakeCrew, monkeypatch) -> None:
+        app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
+        async with app.run_test():
+            assert app._pipeline_running is False
+            called: list[bool] = []
+            monkeypatch.setattr(app, "exit", lambda *a, **k: called.append(True))
+            await app.action_quit()
+            assert called == [True]  # graceful exit, not a hard teardown
+
+    def test_restore_terminal_runs_driver_teardown(self, make_crew: MakeCrew) -> None:
+        # Fake driver (not the real one) so this doesn't collide with Textual's
+        # own stop_application_mode call during pilot teardown.
+        app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
+        called: list[bool] = []
+        app._driver = SimpleNamespace(stop_application_mode=lambda: called.append(True))  # type: ignore[assignment]
+        app._restore_terminal()
+        assert called == [True]
+
+    def test_restore_terminal_swallows_driver_error(self, make_crew: MakeCrew) -> None:
+        def boom() -> None:
+            raise RuntimeError("boom")
+
+        app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
+        app._driver = SimpleNamespace(stop_application_mode=boom)  # type: ignore[assignment]
+        app._restore_terminal()  # error swallowed, no raise
+
+    def test_restore_terminal_is_noop_without_driver(self, make_crew: MakeCrew) -> None:
+        app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)  # never mounted -> _driver is None
+        app._restore_terminal()  # no-op, must not raise
+
+    def test_kill_run_children_terminates_then_kills_stragglers(self, monkeypatch) -> None:
+        clean, straggler, doomed = _FakeProc(), _FakeProc(), _FakeProc(raises=True)
+        procs = [clean, straggler, doomed]
+        monkeypatch.setattr(
+            "psutil.Process", lambda: SimpleNamespace(children=lambda recursive: procs)
+        )
+        # wait_procs reports straggler + doomed still alive after SIGTERM
+        monkeypatch.setattr(
+            "psutil.wait_procs", lambda children, timeout: ([clean], [straggler, doomed])
+        )
+        CrewAIPipelineTUI._kill_run_children()
+        assert clean.terminated and straggler.terminated  # SIGTERM the tree
+        assert straggler.killed  # SIGKILL the straggler
+        assert not clean.killed  # the one that died on SIGTERM is left alone
+
+    def test_kill_run_children_swallows_process_error(self, monkeypatch) -> None:
+        def boom() -> None:
+            raise psutil.AccessDenied()
+
+        monkeypatch.setattr("psutil.Process", boom)
+        CrewAIPipelineTUI._kill_run_children()  # returns cleanly, no raise
