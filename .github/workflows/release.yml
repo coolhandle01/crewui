@@ -16,12 +16,17 @@ jobs:
   # workflows a pull request runs - not a copy of them. If ruff, mypy, pylint,
   # the commit-message check, the 3.10-3.13 test matrix, or the entry-point
   # smoke test would fail on a PR, the release stops here, before build.
+  #
+  # Left unnamed on purpose: a called workflow's checks are prefixed with the
+  # calling job's name, so each one already answers to two names - `ruff` on a
+  # pull request, `checks / ruff` on a tag. Naming these for the caller's
+  # context (once "pr checks") made the tag copy claim to be a PR check, and
+  # that copy is what the required-status-check picker offers, since it lists
+  # whatever ran most recently.
   checks:
-    name: pr checks
     uses: ./.github/workflows/meta.yml
 
   tests:
-    name: pr tests
     uses: ./.github/workflows/tests.yml
 
   build:
