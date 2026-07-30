@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format follows
 [Conventional Commits](https://www.conventionalcommits.org/), and releases are
 cut with `cz bump`, which regenerates the entries below from the commit history.
 
+## v0.2.0 (2026-07-29)
+
+### Feat
+
+- **app**: break-glass teardown on Ctrl+Q for an in-flight run (#7)
+
+## v0.1.1 (2026-07-26)
+
+### Fix
+
+- **app**: thread-aware log dispatch and full review target (#3)
+
 ## v0.1.0
 
 Initial release. A Textual TUI for a sequential CrewAI pipeline, extracted into

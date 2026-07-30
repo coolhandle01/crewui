@@ -27,7 +27,7 @@ an automatic upgrade. Do not scatter crewai-internal imports anywhere else.
 
 | File | What it is |
 |---|---|
-| `crewui/app.py` | The Textual App: widgets, the worker-thread run, the human-review gate, the log handler. The only file that touches crewai internals. |
+| `crewui/app.py` | The Textual App: widgets, the worker-thread run, the human-review gate, the break-glass `Ctrl+Q` teardown, the log handler. The only file that touches crewai internals. |
 | `crewui/_helpers.py` | Pure functions (truncation, log routing, step formatting, sidebar layout, metrics block). No Textual, no threading — unit-tested to full branch coverage. |
 | `crewui/demo.py` | A fully offline scripted crew so `crewui demo` runs with no API key. |
 | `crewui/cli.py` / `crewui/__main__.py` | The `crewui` console script and `python -m crewui`; both route through `cli:main`. |
@@ -40,3 +40,10 @@ crew** in `tests/conftest.py` — never a real `crewai.Crew`. That is deliberate
 the suite stays deterministic, needs no API key, and makes no network call. A
 new App code path gets a pilot test; a new helper gets a unit test. The coverage
 gate is branch coverage at 95%.
+
+The exception: the break-glass `Ctrl+Q` path ends in `os._exit`, so it can't be
+pilot-tested — it would kill the pytest process. Those lines are `# pragma: no
+cover` and proven by a subprocess smoke test (`tests/test_breakglass_smoke.py`),
+not by an in-process test. Do not "fix" the pragma or add an in-process test for
+the hard-exit path; cover only the branches that actually return (idle quit,
+terminal restore, the psutil child-kill logic with psutil mocked).

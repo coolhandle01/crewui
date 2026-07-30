@@ -60,22 +60,45 @@ fake offline crew in `tests/conftest.py` — never against a real `crewai.Crew`,
 so the suite needs no API key and makes no network call. A new code path in the
 App gets a pilot test; a new helper gets a unit test.
 
+The one exception is a path that ends in `os._exit` — the break-glass `Ctrl+Q`
+teardown in `action_quit`. It cannot run inside the pytest process (it would
+take the test runner down with it), so those lines carry `# pragma: no cover`
+and are proven instead by a *subprocess* smoke test
+(`tests/test_breakglass_smoke.py`): it drives the real app in a child
+interpreter with a run blocked in `kickoff()` plus a live child process, presses
+`Ctrl+Q`, and asserts a fast clean exit and a dead child. Do not remove the
+pragma or try to cover the hard-exit path in-process — the in-process branches
+(idle quit, terminal restore, child-kill logic with psutil mocked) are the parts
+that get pilot/unit tests.
+
 An assertion that still passes on empty output is not an assertion — check the
 value, not just that nothing raised.
 
 ## Releasing
 
-Versions are derived from commit messages, not chosen by hand:
+Versions are derived from commit messages, not chosen by hand, and the bump is
+made by CI. `bumpversion.yml` runs on every merge to `main`: if the commits
+since the last tag warrant a release, commitizen bumps the version, updates
+`CHANGELOG.md` and the version files, commits as `bump: ...`, and pushes the
+commit and its tag. If nothing warrants a release, it does nothing.
 
-```bash
-cz bump                  # reads commits since the last tag, decides the increment
-git push --follow-tags   # the bump commit carries the tag with it
-```
+**Never run `cz bump` yourself.** It writes a version commit to your local
+`main` and tags it, so the moment `main` has moved on that commit can only be
+landed with a force-push — leaving a local `main` diverged from the remote and a
+tag that is not an ancestor of either. `cz` stays in the dev extra for `cz check`
+and for previewing what the next version would be (`cz bump --dry-run`).
 
-Pushing a `v*` tag is the only thing that triggers `release.yml`: build,
+The tag `bumpversion.yml` pushes is what triggers `release.yml`: build,
 `twine check`, smoke-test the built wheel on 3.10 and 3.13 (both entry points
 must agree), then publish to PyPI via Trusted Publishing and cut a GitHub
 release. Nothing publishes on an ordinary push or pull request.
+
+That chaining is why the bump authenticates as a **GitHub App** rather than with
+the default `GITHUB_TOKEN`: GitHub deliberately does not fire workflows for
+pushes made with `GITHUB_TOKEN`, so a tag pushed that way would never trigger
+`release.yml`. The App needs `Contents: read and write`, installed on this
+repository, with its id in the `APP_ID` variable and its private key in the
+`APP_PRIVATE_KEY` secret.
 
 Do not cut the release through the GitHub UI — `release.yml` runs
 `gh release create` itself, and a hand-made release makes that step fail after

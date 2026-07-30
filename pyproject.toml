@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "crewui"
-version = "0.1.0"
+version = "0.2.0"
 description = "A Textual TUI for sequential CrewAI pipelines"
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
@@ -61,6 +61,11 @@ classifiers = [
 dependencies = [
     "crewai>=1.15.6,<1.16",
     "textual>=0.60",
+    # Process-tree teardown for the break-glass quit (Ctrl+Q): a running
+    # kickoff cannot be cancelled, so the panic key kills the run's child
+    # subprocesses before hard-exiting, rather than orphaning them. Cross-
+    # platform, PID-namespace-scoped. BSD-3-Clause.
+    "psutil>=5.9",
 ]
 
 [project.optional-dependencies]
@@ -70,6 +75,7 @@ dev = [
     "pytest-cov>=5",
     "pytest-asyncio>=0.23",  # drives the textual.pilot harness for the App tests
     "mypy>=1.11",
+    "types-psutil",  # stubs for the psutil runtime dep, so strict mypy stays green
     "pylint>=3.2",
     # Pinned exactly: a floating linter turns a new upstream rule into a red
     # main, which is not a signal about this repository.
