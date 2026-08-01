@@ -67,6 +67,8 @@ class TestDemoCrew:
         # Two steps per phase (an AgentAction then an AgentFinish).
         assert len(steps) == 6
         assert result.token_usage.total_tokens == 4670
+        # Cached is the sum of the per-turn cache hits (0 + 896 + 1408).
+        assert result.token_usage.cached_prompt_tokens == 2304
         assert "complete" in result.raw
 
     def test_run_demo_launches_the_tui(self, monkeypatch: pytest.MonkeyPatch) -> None:

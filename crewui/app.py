@@ -255,8 +255,13 @@ class CrewAIPipelineTUI(App[None]):
             return
         inp = getattr(usage, "prompt_tokens", 0)
         out = getattr(usage, "completion_tokens", 0)
-        # up-arrow = input tokens, down-arrow = output tokens.
-        self._turn_box.border_subtitle = f"↑{compact_tokens(inp)} · ↓{compact_tokens(out)}"
+        cached = getattr(usage, "cached_prompt_tokens", 0)
+        # up-arrow = input, down-arrow = output, recycle = cached (reused) input.
+        # The cached rail is omitted when zero so an uncached turn stays terse.
+        parts = [f"↑{compact_tokens(inp)}", f"↓{compact_tokens(out)}"]
+        if cached:
+            parts.append(f"↻{compact_tokens(cached)}")
+        self._turn_box.border_subtitle = " · ".join(parts)
 
     def _make_step_callback(self) -> Callable[[object], None]:
         def _cb(step: object) -> None:

@@ -50,6 +50,7 @@ class _Phase(NamedTuple):
     answer: str
     input_tokens: int
     output_tokens: int
+    cached_tokens: int
 
 
 # The model shown on each agent box's title rail. The demo never calls it
@@ -71,6 +72,7 @@ _PHASES = [
         answer="Lisbon in October is warm and walkable. Anchors: Alfama, Belem, a Sintra day trip.",
         input_tokens=1180,
         output_tokens=260,
+        cached_tokens=0,  # cold start - nothing cached yet, so this turn shows no cache rail
     ),
     _Phase(
         name="Itinerary",
@@ -82,6 +84,7 @@ _PHASES = [
         answer="Fri: Alfama + Fado. Sat: Belem + Time Out Market. Sun: Sintra day trip.",
         input_tokens=1610,
         output_tokens=430,
+        cached_tokens=896,  # the research turn's context is now a cache hit
     ),
     _Phase(
         name="Budget",
@@ -93,6 +96,7 @@ _PHASES = [
         answer="Rough budget ~EUR 540: stay EUR 330, food EUR 150, transit and Sintra EUR 60.",
         input_tokens=980,
         output_tokens=210,
+        cached_tokens=1408,  # research + itinerary context both cached by now
     ),
 ]
 
@@ -136,7 +140,7 @@ def _scripted_kickoff(crew: Crew) -> _Result:
     box subtitle). Returns a canned result whose ``token_usage`` is the sum of
     the turns, so the App's metrics block totals match.
     """
-    agg_in = agg_out = 0
+    agg_in = agg_out = agg_cached = 0
     for task, phase in zip(crew.tasks, _PHASES, strict=True):
         if crew.step_callback is not None:
             crew.step_callback(
@@ -155,6 +159,7 @@ def _scripted_kickoff(crew: Crew) -> _Result:
             )
         agg_in += phase.input_tokens
         agg_out += phase.output_tokens
+        agg_cached += phase.cached_tokens
         if task.callback is not None:
             task.callback(
                 _TaskOut(
@@ -163,6 +168,7 @@ def _scripted_kickoff(crew: Crew) -> _Result:
                         prompt_tokens=phase.input_tokens,
                         completion_tokens=phase.output_tokens,
                         total_tokens=phase.input_tokens + phase.output_tokens,
+                        cached_prompt_tokens=phase.cached_tokens,
                     ),
                 )
             )
@@ -174,7 +180,7 @@ def _scripted_kickoff(crew: Crew) -> _Result:
             prompt_tokens=agg_in,
             completion_tokens=agg_out,
             total_tokens=agg_in + agg_out,
-            cached_prompt_tokens=512,
+            cached_prompt_tokens=agg_cached,
         ),
     )
 

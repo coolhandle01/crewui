@@ -455,6 +455,25 @@ class TestAgentSession:
             assert app._turn_box is not None
             assert app._turn_box.border_subtitle == "↑1.2k · ↓260"
 
+    async def test_cached_tokens_add_a_recycle_rail(self, make_crew: MakeCrew) -> None:
+        app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
+        async with app.run_test() as pilot:
+            app._open_agent_turn(0)
+            await pilot.pause(0.05)
+
+            class _Usage:
+                prompt_tokens = 1610
+                completion_tokens = 430
+                cached_prompt_tokens = 896
+
+            class _Out:
+                token_usage = _Usage()
+
+            app._apply_turn_usage(_Out())
+            assert app._turn_box is not None
+            # A cached turn appends a recycle rail; an uncached one (above) does not.
+            assert app._turn_box.border_subtitle == "↑1.6k · ↓430 · ↻896"
+
     async def test_output_without_usage_leaves_subtitle_blank(self, make_crew: MakeCrew) -> None:
         app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
         async with app.run_test() as pilot:
@@ -518,6 +537,20 @@ class TestDefensiveBranches:
         # format_step_message falls through to str(step); this raises there, and
         # the callback must catch it rather than propagate into the crew's run.
         callback(Explosive())
+
+    def test_step_callback_dispatches_formatted_message(self, make_crew: MakeCrew) -> None:
+        from unittest.mock import MagicMock
+
+        app = CrewAIPipelineTUI(crew=make_crew())
+        # Not running here, so stub the worker->UI bridge; the seam under test is
+        # that a well-formed step is formatted and handed to the agent-pane writer
+        # (the success path, distinct from the swallow-on-error path above).
+        app.call_from_thread = MagicMock()  # type: ignore[method-assign]
+        app._make_step_callback()("a plain step line")
+        app.call_from_thread.assert_called_once()
+        dispatched, message = app.call_from_thread.call_args.args
+        assert dispatched == app._write_agent
+        assert message == "a plain step line"
 
 
 class TestThemeOwnership:
