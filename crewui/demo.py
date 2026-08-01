@@ -176,11 +176,11 @@ def _scripted_kickoff(crew: Crew) -> _Result:
 def build_demo_crew() -> Crew:
     """Build the offline demo crew with a scripted ``kickoff``.
 
-    A dummy ``OPENAI_API_KEY`` is set only if none is present so that
+    A dummy ``ANTHROPIC_API_KEY`` is set only if none is present so that
     constructing the agents never prompts; no request is ever made because
     ``kickoff`` is replaced before the App can call it.
     """
-    os.environ.setdefault("OPENAI_API_KEY", "crewui-demo-no-network")
+    os.environ.setdefault("ANTHROPIC_API_KEY", "crewui-demo-no-network")
 
     agents = []
     tasks = []
@@ -189,7 +189,7 @@ def build_demo_crew() -> Crew:
             role=phase.role,
             goal=f"The {phase.name.lower()} step of a trip-planning pipeline.",
             backstory=f"The {phase.role.lower()} on a small trip-planning crew.",
-            llm="gpt-4o-mini",
+            llm="anthropic/claude-sonnet-5",
             verbose=False,
         )
         agents.append(agent)
