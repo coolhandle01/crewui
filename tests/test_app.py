@@ -17,7 +17,7 @@ from typing import cast
 
 import psutil
 from textual.containers import Vertical, VerticalScroll
-from textual.widgets import Label, RichLog, Static
+from textual.widgets import Collapsible, Label, RichLog, Static
 
 from crewui.app import (
     CrewAIPipelineTUI,
@@ -555,6 +555,136 @@ class TestAgentSession:
             assert app._turn_box is None
 
 
+class TestToolCalls:
+    """Tool calls render as collapsed boxes inside the current agent turn, fed
+    by CrewAI's tool-usage event bus (which fires on every provider, unlike the
+    ReAct step callback). The UI methods and the bus handlers are exercised on
+    the UI thread, where ``_on_ui`` dispatches directly - the worker->UI bounce
+    is the same seam TestLogHandler covers.
+    """
+
+    async def test_started_mounts_a_collapsed_box_with_pending_body(
+        self, make_crew: MakeCrew
+    ) -> None:
+        app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
+        async with app.run_test() as pilot:
+            app._open_agent_turn(0)
+            await pilot.pause(0.05)
+            app._tool_started_ui("search_web", {"q": "lisbon"})
+            await pilot.pause(0.05)
+            coll = app.query_one(".tool-call", Collapsible)
+            assert coll.collapsed is True
+            assert coll.title == "> search_web(q=lisbon)"
+            assert "running" in str(app.query_one(".tool-out", Static).render())
+
+    async def test_finished_fills_body_and_stamps_the_header(self, make_crew: MakeCrew) -> None:
+        app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
+        async with app.run_test() as pilot:
+            app._open_agent_turn(0)
+            await pilot.pause(0.05)
+            app._tool_started_ui("search_web", {"q": "lisbon"})
+            app._tool_finished_ui("mild ~22C; Alfama", from_cache=True, ok=True)
+            await pilot.pause(0.05)
+            coll = app.query_one(".tool-call", Collapsible)
+            # Success tick plus a cache marker; the output fills the body.
+            assert "✓" in coll.title
+            assert "⚡" in coll.title
+            assert "22C" in str(app.query_one(".tool-out", Static).render())
+
+    async def test_error_event_marks_the_header_failed(self, make_crew: MakeCrew) -> None:
+        app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
+        async with app.run_test() as pilot:
+            app._open_agent_turn(0)
+            await pilot.pause(0.05)
+            app._tool_started_ui("recon", "example.com")
+            # Through the error bus handler, which pulls .error off the event.
+            app._on_tool_error(None, SimpleNamespace(error="boom"))
+            await pilot.pause(0.05)
+            coll = app.query_one(".tool-call", Collapsible)
+            assert "✗" in coll.title
+            assert "boom" in str(app.query_one(".tool-out", Static).render())
+
+    async def test_started_lazily_opens_a_turn_when_none_is_open(
+        self, make_crew: MakeCrew
+    ) -> None:
+        app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            # No turn open yet: a tool starting must open one, then mount into it.
+            assert app._turn_box is None
+            app._tool_started_ui("recon", "x")
+            await pilot.pause(0.05)
+            assert app._turn_box is not None
+            assert app.query_one(".tool-call", Collapsible) is not None
+
+    async def test_started_without_a_session_is_a_noop(self, make_crew: MakeCrew) -> None:
+        app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
+        async with app.run_test() as pilot:
+            await app.query_one("#agent-session", VerticalScroll).remove()
+            await pilot.pause(0.05)
+            # The session widget is gone; opening a turn fails, so there is
+            # nothing to mount into - swallowed, not raised.
+            app._tool_started_ui("recon", "x")
+            assert not app.query(".tool-call")
+
+    async def test_bus_handlers_extract_event_fields_and_render(
+        self, make_crew: MakeCrew
+    ) -> None:
+        app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
+        async with app.run_test() as pilot:
+            app._open_agent_turn(0)
+            await pilot.pause(0.05)
+            # Fake events with the fields the handlers read; calling on the UI
+            # thread dispatches the render directly (no worker bounce).
+            app._on_tool_started(None, SimpleNamespace(tool_name="recon", tool_args={"host": "x"}))
+            app._on_tool_finished(None, SimpleNamespace(output="found 2 hosts", from_cache=False))
+            await pilot.pause(0.05)
+            coll = app.query_one(".tool-call", Collapsible)
+            assert coll.title.startswith("> recon(host=x)")
+            assert "✓" in coll.title
+            assert "found 2 hosts" in str(app.query_one(".tool-out", Static).render())
+
+    async def test_finished_without_a_pending_box_is_a_noop(self, make_crew: MakeCrew) -> None:
+        app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
+        async with app.run_test() as pilot:
+            app._open_agent_turn(0)
+            await pilot.pause(0.05)
+            # A stray finished event (no start) must not crash or mount anything.
+            app._tool_finished_ui("orphan", from_cache=False, ok=True)
+            await pilot.pause(0.05)
+            assert not app.query(".tool-call")
+
+    async def test_prose_after_a_tool_opens_a_fresh_text_block(self, make_crew: MakeCrew) -> None:
+        app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
+        async with app.run_test() as pilot:
+            app._open_agent_turn(0)
+            await pilot.pause(0.05)
+            app._write_agent("thinking")
+            app._tool_started_ui("recon", "x")
+            app._tool_finished_ui("done", from_cache=False, ok=True)
+            app._write_agent("the answer")
+            await pilot.pause(0.05)
+            turn = app.query_one(".agent-turn", Vertical)
+            texts = [str(s.render()) for s in turn.query(".agent-text").results(Static)]
+            # Two distinct text runs, the tool box between them - not one merged run.
+            assert "thinking" in texts[0]
+            assert any("the answer" in t for t in texts[1:])
+            assert turn.query_one(".tool-call", Collapsible) is not None
+
+    async def test_a_run_deregisters_its_tool_handlers(self, make_crew: MakeCrew) -> None:
+        # The bus is a global singleton; a finished run must leave no handler
+        # bound to the (now-idle) app, or a later crew would drive a dead UI.
+        from crewai.events import ToolUsageStartedEvent, crewai_event_bus
+
+        app = CrewAIPipelineTUI(crew=make_crew())
+        async with app.run_test() as pilot:
+            assert await _wait_for(
+                pilot,
+                lambda: app._on_tool_started
+                not in crewai_event_bus._sync_handlers.get(ToolUsageStartedEvent, frozenset()),
+            )
+
+
 class TestLogHandler:
     async def test_agent_prefixed_records_go_to_agent_log(self, make_crew: MakeCrew) -> None:
         app = CrewAIPipelineTUI(crew=make_crew(), record_prefix="myapp", dry_run=True)
@@ -695,20 +825,22 @@ class TestLogHandlerDispatch:
 
 
 class TestUiDispatch:
-    """``_ui_dispatch`` picks the hand-off for the current thread: a caller on
-    the UI thread calls the widget method directly (``call_from_thread`` would
-    crash there), a worker-thread caller bounces through ``call_from_thread``.
+    """``_on_ui`` picks the hand-off for the current thread: a caller on the UI
+    thread calls the widget method directly (``call_from_thread`` would crash
+    there), a worker-thread caller bounces through ``call_from_thread``.
     Exercised against a light stand-in so no Textual event loop is needed.
+    (``_ui_dispatch`` is a thin single-string wrapper over this, covered by the
+    log-handler tests.)
     """
 
     def test_direct_call_when_on_ui_thread(self) -> None:
         calls: list[tuple[str, str]] = []
         stub = SimpleNamespace(
             _ui_thread_id=threading.get_ident(),
-            call_from_thread=lambda fn, msg: calls.append(("bounced", msg)),
+            call_from_thread=lambda fn, *a: calls.append(("bounced", *a)),
         )
 
-        CrewAIPipelineTUI._ui_dispatch(
+        CrewAIPipelineTUI._on_ui(
             cast("CrewAIPipelineTUI", stub), lambda m: calls.append(("direct", m)), "hi"
         )
 
@@ -718,10 +850,10 @@ class TestUiDispatch:
         calls: list[tuple[str, str]] = []
         stub = SimpleNamespace(
             _ui_thread_id=-1,  # never matches a real thread id
-            call_from_thread=lambda fn, msg: calls.append(("bounced", msg)),
+            call_from_thread=lambda fn, *a: calls.append(("bounced", *a)),
         )
 
-        CrewAIPipelineTUI._ui_dispatch(
+        CrewAIPipelineTUI._on_ui(
             cast("CrewAIPipelineTUI", stub), lambda m: calls.append(("direct", m)), "hi"
         )
 

@@ -124,3 +124,17 @@ def format_step_message(step: object) -> str:
     if isinstance(step, AgentFinish):
         return f"[bold green]Answer:[/bold green] {step.output}"
     return truncate(str(step), 300)
+
+
+def format_tool_title(tool_name: str, tool_args: object) -> str:
+    """``> tool(args)`` for a tool-call collapsible's header rail.
+
+    ``tool_args`` is CrewAI's ``dict | str``: a dict renders as ``k=v`` pairs, a
+    string passes through. The rendered args are clipped so the collapsed header
+    stays one short line - the full input is a click away in the expanded body.
+    """
+    if isinstance(tool_args, dict):
+        shown = ", ".join(f"{key}={value}" for key, value in tool_args.items())
+    else:
+        shown = str(tool_args)
+    return f"> {tool_name}({truncate(shown, 80)})"

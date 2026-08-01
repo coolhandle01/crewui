@@ -26,21 +26,29 @@ from typing import TYPE_CHECKING
 
 import psutil
 from crewai import Crew
+from crewai.events import (
+    ToolUsageErrorEvent,
+    ToolUsageFinishedEvent,
+    ToolUsageStartedEvent,
+    crewai_event_bus,
+)
 from rich.text import Text
 from textual import events, work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.message import Message
-from textual.widgets import Label, RichLog, Rule, Static, TextArea
+from textual.widgets import Collapsible, Label, RichLog, Rule, Static, TextArea
 
 from crewui._helpers import (
     compact_tokens,
     dispatch_on_ui_thread,
     format_metrics_block,
     format_step_message,
+    format_tool_title,
     route_log_record,
     task_layout,
+    truncate,
 )
 
 if TYPE_CHECKING:
@@ -127,6 +135,12 @@ class CrewAIPipelineTUI(App[None]):
         self._turn_text: Static | None = None
         self._turn_lines: list[str] = []
         self._current_task_idx: int = 0
+        # The in-flight tool call: crewai emits Started then (after the tool
+        # runs) Finished, strictly one at a time, so a single pending pair is
+        # enough. _pending_coll is its collapsible (title updated on finish),
+        # _pending_tool the body Static its output fills in.
+        self._pending_coll: Collapsible | None = None
+        self._pending_tool: Static | None = None
         # Per-turn token spend: each agent holds a live token accumulator that
         # crewai's LLM callback ticks up as a task runs, cumulative across that
         # agent's turns. We snapshot it (keyed by agent id) at each task
@@ -234,6 +248,15 @@ class CrewAIPipelineTUI(App[None]):
         # get_provider() - same thread - picks it up; reset when the run ends.
         token = set_provider(_make_tui_human_input_provider(self))
         self._pipeline_running = True
+        # Render tool calls in the agent session. CrewAI emits these around every
+        # tool execution regardless of LLM provider - unlike the ReAct step
+        # callback, which the native tool-calling path never fires. Registered
+        # alongside crewai's own handlers (not via scoped_handlers, which would
+        # clear them) and removed in the finally, so a second run - or a second
+        # App in one process, as in the tests - never stacks a dead handler.
+        crewai_event_bus.register_handler(ToolUsageStartedEvent, self._on_tool_started)
+        crewai_event_bus.register_handler(ToolUsageFinishedEvent, self._on_tool_finished)
+        crewai_event_bus.register_handler(ToolUsageErrorEvent, self._on_tool_error)
         try:
             result = self._crew.kickoff()
             self.call_from_thread(self._on_done, result)
@@ -243,6 +266,9 @@ class CrewAIPipelineTUI(App[None]):
         finally:
             self._pipeline_running = False
             reset_provider(token)
+            crewai_event_bus.off(ToolUsageStartedEvent, self._on_tool_started)
+            crewai_event_bus.off(ToolUsageFinishedEvent, self._on_tool_finished)
+            crewai_event_bus.off(ToolUsageErrorEvent, self._on_tool_error)
 
     def _make_task_callback(
         self, idx: int, orig: Callable[..., None] | None
@@ -434,8 +460,14 @@ class CrewAIPipelineTUI(App[None]):
     def _write_agent(self, msg: str) -> None:
         if self._turn_box is None:
             self._open_agent_turn(self._current_task_idx)
-        if self._turn_text is None:  # session not mounted - nothing to write into
+        if self._turn_box is None:  # session not mounted - nothing to write into
             return
+        if self._turn_text is None:
+            # First prose after a tool box: start a fresh Static below it so the
+            # text lands under the tool call, not merged into the run above it.
+            self._turn_lines = []
+            self._turn_text = Static("", classes="agent-text")
+            self._turn_box.mount(self._turn_text)
         self._turn_lines.append(msg)
         self._turn_text.update(Text.from_markup("\n\n".join(self._turn_lines)))
         with contextlib.suppress(NoMatches):
@@ -447,18 +479,78 @@ class CrewAIPipelineTUI(App[None]):
         except NoMatches:
             logger.debug("crew-log widget not mounted, dropping message")
 
-    def _ui_dispatch(self, fn: Callable[[str], None], msg: str) -> None:
-        """Run a UI update, from either the worker thread or the UI thread.
+    def _on_ui(self, fn: Callable[..., None], *args: object) -> None:
+        """Run a UI update from either the worker thread or the UI thread.
 
         Worker-thread updates go through ``call_from_thread``; a caller already
-        on the UI thread (a log record emitted inside a UI callback) calls
-        ``fn`` directly, because ``call_from_thread`` raises when invoked from
-        the app thread.
+        on the UI thread (a log record, or a tool event emitted inside a
+        UI-thread callback) calls ``fn`` directly, because ``call_from_thread``
+        raises when invoked from the app thread.
         """
         if dispatch_on_ui_thread(threading.get_ident(), self._ui_thread_id):
-            fn(msg)
+            fn(*args)
         else:
-            self.call_from_thread(fn, msg)
+            self.call_from_thread(fn, *args)
+
+    def _ui_dispatch(self, fn: Callable[[str], None], msg: str) -> None:
+        """Thread-aware dispatch of a single-string UI update (log records)."""
+        self._on_ui(fn, msg)
+
+    def _on_tool_started(self, _source: object, event: object) -> None:
+        """Bus handler (worker thread): a tool is about to run - open its box."""
+        name = str(getattr(event, "tool_name", "tool"))
+        args = getattr(event, "tool_args", "")
+        self._on_ui(self._tool_started_ui, name, args)
+
+    def _on_tool_finished(self, _source: object, event: object) -> None:
+        """Bus handler (worker thread): a tool returned - fill its box."""
+        output = getattr(event, "output", "")
+        from_cache = bool(getattr(event, "from_cache", False))
+        self._on_ui(self._tool_finished_ui, output, from_cache, True)
+
+    def _on_tool_error(self, _source: object, event: object) -> None:
+        """Bus handler (worker thread): a tool raised - close its box as failed."""
+        error = getattr(event, "error", "")
+        self._on_ui(self._tool_finished_ui, error, False, False)
+
+    def _tool_started_ui(self, name: str, args: object) -> None:
+        """Mount a collapsed tool-call box into the current turn, output pending.
+
+        Collapsed by default so a long result does not swamp the session - the
+        header carries ``> tool(args)``; expanding it shows the output once the
+        matching finished/error event fills it in."""
+        if self._turn_box is None:
+            self._open_agent_turn(self._current_task_idx)
+        if self._turn_box is None:  # session not mounted - nothing to mount into
+            return
+        body = Static("running...", classes="tool-out", markup=False)
+        coll = Collapsible(
+            body, title=format_tool_title(name, args), collapsed=True, classes="tool-call"
+        )
+        self._turn_box.mount(coll)
+        self._pending_coll = coll
+        self._pending_tool = body
+        # Prose after this tool opens a fresh Static below the box (see _write_agent).
+        self._turn_text = None
+        with contextlib.suppress(NoMatches):
+            self.query_one("#agent-session", VerticalScroll).scroll_end(animate=False)
+
+    def _tool_finished_ui(self, output: object, from_cache: bool, ok: bool) -> None:
+        """Fill the in-flight tool box with its output and stamp the header.
+
+        A no-op if no box is pending - crewai emits Started before Finished, so
+        the pair is always in order, but a stray Finished must not crash."""
+        if self._pending_tool is None or self._pending_coll is None:
+            return
+        self._pending_tool.update(truncate(str(output), 4000) or "(no output)")
+        marker = " ✓" if ok else " ✗"
+        if from_cache:
+            marker += " ⚡"
+        self._pending_coll.title = f"{self._pending_coll.title}{marker}"
+        self._pending_coll = None
+        self._pending_tool = None
+        with contextlib.suppress(NoMatches):
+            self.query_one("#agent-session", VerticalScroll).scroll_end(animate=False)
 
     # -- teardown --
 

@@ -101,6 +101,20 @@ Screen {
     height: auto;
 }
 
+/* A tool call within a turn: collapsed by default (Collapsible) so a long
+   result stays folded away; dimmed so it reads as secondary to the prose. The
+   header rail carries `> tool(args)`, stamped with the outcome on completion. */
+.tool-call {
+    height: auto;
+    color: $text-muted;
+    margin: 0;
+}
+
+.tool-out {
+    height: auto;
+    color: $text-muted;
+}
+
 /* The human-review prompt - unmissable, centred title. */
 .gate-box {
     border: round $warning;

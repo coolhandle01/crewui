@@ -16,6 +16,7 @@ from crewui._helpers import (
     dispatch_on_ui_thread,
     format_metrics_block,
     format_step_message,
+    format_tool_title,
     route_log_record,
     task_layout,
     truncate,
@@ -178,3 +179,17 @@ class TestFormatStepMessage:
         msg = format_step_message("random output " + "z" * 500)
         assert msg.startswith("random output ")
         assert len(msg) == 300
+
+
+class TestFormatToolTitle:
+    def test_dict_args_render_as_key_value_pairs(self) -> None:
+        title = format_tool_title("search_web", {"q": "lisbon", "n": 3})
+        assert title == "> search_web(q=lisbon, n=3)"
+
+    def test_string_args_pass_through(self) -> None:
+        assert format_tool_title("recon", "example.com") == "> recon(example.com)"
+
+    def test_long_args_are_clipped_to_keep_the_header_short(self) -> None:
+        title = format_tool_title("t", "x" * 200)
+        # Clipped to 80 chars inside the parens; the full input is in the body.
+        assert title == "> t(" + "x" * 80 + ")"
