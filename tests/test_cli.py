@@ -70,6 +70,11 @@ class TestDemoCrew:
         # Cached is the sum of the per-turn cache hits (0 + 896 + 1408).
         assert result.token_usage.cached_prompt_tokens == 2304
         assert "complete" in result.raw
+        # The demo drives the *real* per-turn path: it ticks each agent's live
+        # token accumulator (the one a live run's LLM callback feeds), rather
+        # than faking usage onto the TaskOutput.
+        assert crew.tasks[1].agent._token_process.get_summary().prompt_tokens == 1610
+        assert crew.tasks[2].agent._token_process.get_summary().cached_prompt_tokens == 1408
 
     def test_run_demo_launches_the_tui(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # run_demo should construct the App and call .run(); stub run() so no

@@ -27,7 +27,12 @@ class FakeTask:
     agent: SimpleNamespace = field(init=False)
 
     def __post_init__(self) -> None:
-        self.agent = SimpleNamespace(role=self.role)
+        # ``_token_process`` is the real crewai accumulator: the App reads the
+        # per-turn subtitle from ``agent._token_process.get_summary()``, so the
+        # fake carries the genuine object a live run would tick up.
+        from crewai.agents.agent_builder.utilities.base_token_process import TokenProcess
+
+        self.agent = SimpleNamespace(role=self.role, _token_process=TokenProcess())
 
 
 @dataclass

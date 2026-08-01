@@ -439,48 +439,95 @@ class TestAgentSession:
             assert list(app.query(".you-box")) == []
 
     async def test_task_usage_stamps_the_turn_subtitle(self, make_crew: MakeCrew) -> None:
-        app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
+        crew = make_crew()
+        app = CrewAIPipelineTUI(crew=crew, dry_run=True)
         async with app.run_test() as pilot:
             app._open_agent_turn(0)
             await pilot.pause(0.05)
-
-            class _Usage:
-                prompt_tokens = 1180
-                completion_tokens = 260
-
-            class _Out:
-                token_usage = _Usage()
-
-            app._apply_turn_usage(_Out())
+            # Tick the agent's live accumulator as crewai's LLM callback would
+            # during task 0, then read the turn's spend back off it.
+            proc = crew.tasks[0].agent._token_process
+            proc.sum_prompt_tokens(1180)
+            proc.sum_completion_tokens(260)
+            app._apply_turn_usage(0)
             assert app._turn_box is not None
             assert app._turn_box.border_subtitle == "↑1.2k · ↓260"
 
     async def test_cached_tokens_add_a_recycle_rail(self, make_crew: MakeCrew) -> None:
-        app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
+        crew = make_crew()
+        app = CrewAIPipelineTUI(crew=crew, dry_run=True)
         async with app.run_test() as pilot:
             app._open_agent_turn(0)
             await pilot.pause(0.05)
-
-            class _Usage:
-                prompt_tokens = 1610
-                completion_tokens = 430
-                cached_prompt_tokens = 896
-
-            class _Out:
-                token_usage = _Usage()
-
-            app._apply_turn_usage(_Out())
+            proc = crew.tasks[0].agent._token_process
+            proc.sum_prompt_tokens(1610)
+            proc.sum_completion_tokens(430)
+            proc.sum_cached_prompt_tokens(896)
+            app._apply_turn_usage(0)
             assert app._turn_box is not None
-            # A cached turn appends a recycle rail; an uncached one (above) does not.
+            # A cached turn appends a recycle rail; an uncached one does not.
             assert app._turn_box.border_subtitle == "↑1.6k · ↓430 · ↻896"
 
-    async def test_output_without_usage_leaves_subtitle_blank(self, make_crew: MakeCrew) -> None:
+    async def test_second_turn_same_agent_shows_only_the_delta(
+        self, make_crew: MakeCrew
+    ) -> None:
+        # The accumulator is cumulative across an agent's turns, so a per-agent
+        # diff must show the turn's own spend, not the running total.
+        crew = make_crew()
+        app = CrewAIPipelineTUI(crew=crew, dry_run=True)
+        async with app.run_test() as pilot:
+            proc = crew.tasks[0].agent._token_process
+            app._open_agent_turn(0)
+            await pilot.pause(0.05)
+            proc.sum_prompt_tokens(1000)
+            proc.sum_completion_tokens(200)
+            app._apply_turn_usage(0)
+            assert app._turn_box is not None
+            assert app._turn_box.border_subtitle == "↑1.0k · ↓200"
+            # Same agent runs again; the accumulator grows to 1500 / 300.
+            app._open_agent_turn(0)
+            proc.sum_prompt_tokens(500)
+            proc.sum_completion_tokens(100)
+            app._apply_turn_usage(0)
+            assert app._turn_box is not None
+            # The subtitle shows this turn (500 / 100), not the total (1500 / 300).
+            assert app._turn_box.border_subtitle == "↑500 · ↓100"
+
+    async def test_turn_with_no_token_spend_leaves_subtitle_blank(
+        self, make_crew: MakeCrew
+    ) -> None:
         app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
         async with app.run_test() as pilot:
             app._open_agent_turn(0)
             await pilot.pause(0.05)
-            # A plain crewai TaskOutput carries no token_usage - subtitle stays blank.
-            app._apply_turn_usage("no usage here")
+            # No LLM ran for this turn - the accumulator is still zero, so no rail.
+            app._apply_turn_usage(0)
+            assert app._turn_box is not None
+            assert not app._turn_box.border_subtitle
+
+    async def test_out_of_range_task_index_leaves_subtitle_blank(
+        self, make_crew: MakeCrew
+    ) -> None:
+        app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
+        async with app.run_test() as pilot:
+            app._open_agent_turn(0)
+            await pilot.pause(0.05)
+            # No such task (a re-invoked turn past the list) - swallowed, no rail.
+            app._apply_turn_usage(99)
+            assert app._turn_box is not None
+            assert not app._turn_box.border_subtitle
+
+    async def test_agent_without_accumulator_leaves_subtitle_blank(
+        self, make_crew: MakeCrew
+    ) -> None:
+        crew = make_crew()
+        # An agent that exposes no token accumulator (e.g. a custom BaseAgent).
+        del crew.tasks[0].agent._token_process
+        app = CrewAIPipelineTUI(crew=crew, dry_run=True)
+        async with app.run_test() as pilot:
+            app._open_agent_turn(0)
+            await pilot.pause(0.05)
+            app._apply_turn_usage(0)
             assert app._turn_box is not None
             assert not app._turn_box.border_subtitle
 

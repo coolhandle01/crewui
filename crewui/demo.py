@@ -18,9 +18,11 @@ free of API keys while still driving every code path the App uses to render a
 run: step callbacks, per-task status transitions, per-turn token subtitles,
 and the final result + token-usage block.
 
-Per-turn token counts are faked here because crewai's ``TaskOutput`` carries no
-per-task usage - so on a *real* run the App leaves each box's subtitle blank,
-while the demo supplies one so the feature is visible.
+The per-turn token subtitle is *real*: on a live run the App reads each agent's
+``_token_process`` accumulator, which crewai's LLM callback ticks up as the task
+runs. This demo makes no LLM call, so it ticks that same accumulator by hand
+with canned counts - driving the identical code path a live run does, rather
+than faking numbers onto the output.
 """
 
 from __future__ import annotations
@@ -122,12 +124,11 @@ class _Result:
 
 @dataclass
 class _TaskOut:
-    """Stand-in for a crewai ``TaskOutput`` handed to a task callback. Real
-    TaskOutput carries no per-task usage, so the App reads ``token_usage``
-    defensively; the demo supplies it to drive the per-turn subtitle."""
+    """Stand-in for a crewai ``TaskOutput`` handed to a task callback. Like the
+    real thing it carries no per-task usage - the App reads the turn's spend
+    from the agent's accumulator, not from here - so ``raw`` is all it needs."""
 
     raw: str
-    token_usage: _Usage
 
 
 def _scripted_kickoff(crew: Crew) -> _Result:
@@ -157,21 +158,18 @@ def _scripted_kickoff(crew: Crew) -> _Result:
             crew.step_callback(
                 AgentFinish(thought=phase.thought, output=phase.answer, text=phase.answer)
             )
+        # Tick the agent's real token accumulator, exactly as crewai's
+        # TokenCalcHandler does on a live run - so the App's per-turn subtitle
+        # is driven through its real path, not handed faked numbers.
+        proc = task.agent._token_process
+        proc.sum_prompt_tokens(phase.input_tokens)
+        proc.sum_completion_tokens(phase.output_tokens)
+        proc.sum_cached_prompt_tokens(phase.cached_tokens)
         agg_in += phase.input_tokens
         agg_out += phase.output_tokens
         agg_cached += phase.cached_tokens
         if task.callback is not None:
-            task.callback(
-                _TaskOut(
-                    raw=phase.answer,
-                    token_usage=_Usage(
-                        prompt_tokens=phase.input_tokens,
-                        completion_tokens=phase.output_tokens,
-                        total_tokens=phase.input_tokens + phase.output_tokens,
-                        cached_prompt_tokens=phase.cached_tokens,
-                    ),
-                )
-            )
+            task.callback(_TaskOut(raw=phase.answer))
         time.sleep(0.4)
 
     return _Result(

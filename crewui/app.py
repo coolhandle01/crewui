@@ -121,6 +121,12 @@ class CrewAIPipelineTUI(App[None]):
         self._turn_box: Static | None = None
         self._turn_lines: list[str] = []
         self._current_task_idx: int = 0
+        # Per-turn token spend: each agent holds a live token accumulator that
+        # crewai's LLM callback ticks up as a task runs, cumulative across that
+        # agent's turns. We snapshot it (keyed by agent id) at each task
+        # boundary; a turn's own spend is the running total now minus its total
+        # at the agent's previous turn.
+        self._usage_snapshots: dict[int, tuple[int, int, int]] = {}
         # Human-review bridge: the worker thread parks on this event while the
         # operator types feedback into the input box on the UI thread.
         self._feedback_event: threading.Event | None = None
@@ -236,26 +242,49 @@ class CrewAIPipelineTUI(App[None]):
         self, idx: int, orig: Callable[..., None] | None
     ) -> Callable[..., None]:
         def _cb(output: object) -> None:
-            # Stamp the turn's token cost on its box subtitle before the sidebar
-            # advances (which opens the next box). No-op when the output carries
-            # no per-task usage - which is every real crewai TaskOutput; only the
-            # offline demo supplies it.
-            self.call_from_thread(self._apply_turn_usage, output)
+            # Stamp the turn's token spend on its box subtitle before the sidebar
+            # advances (which opens the next box). The spend is read from the
+            # agent's live accumulator, not the output - crewai's TaskOutput
+            # carries no per-task usage.
+            self.call_from_thread(self._apply_turn_usage, idx)
             self.call_from_thread(self._set_task_done, idx)
             if orig is not None:
                 orig(output)
 
         return _cb
 
-    def _apply_turn_usage(self, output: object) -> None:
-        """Set the current turn box's ``border_subtitle`` to its token cost when
-        the task output exposes usage; a no-op otherwise."""
-        usage = getattr(output, "token_usage", None)
-        if usage is None or self._turn_box is None:
+    def _apply_turn_usage(self, idx: int) -> None:
+        """Stamp task ``idx``'s turn box with *this* turn's real token spend.
+
+        crewai's ``TaskOutput`` carries no per-task usage, but every agent holds
+        a live ``_token_process`` accumulator that the LLM callback ticks up as
+        the task runs; this fires after the agent finishes (see
+        ``Task._execute_core``), so the total is complete by now. One agent may
+        run several tasks and the accumulator is cumulative, so the turn's own
+        spend is a per-agent diff against the previous snapshot. A no-op when the
+        box is gone or the agent exposes no accumulator (subtitle stays blank)."""
+        if self._turn_box is None:
             return
-        inp = getattr(usage, "prompt_tokens", 0)
-        out = getattr(usage, "completion_tokens", 0)
-        cached = getattr(usage, "cached_prompt_tokens", 0)
+        try:
+            agent = self._crew.tasks[idx].agent
+        except (IndexError, AttributeError):
+            return
+        proc = getattr(agent, "_token_process", None)
+        if proc is None:
+            return
+        summary = proc.get_summary()
+        now = (
+            getattr(summary, "prompt_tokens", 0),
+            getattr(summary, "completion_tokens", 0),
+            getattr(summary, "cached_prompt_tokens", 0),
+        )
+        prev = self._usage_snapshots.get(id(agent), (0, 0, 0))
+        self._usage_snapshots[id(agent)] = now
+        inp, out, cached = (now[0] - prev[0], now[1] - prev[1], now[2] - prev[2])
+        if inp <= 0 and out <= 0:
+            # Nothing was recorded for this turn (e.g. a step with no LLM call);
+            # leave the subtitle blank rather than show a zero rail.
+            return
         # up-arrow = input, down-arrow = output, recycle = cached (reused) input.
         # The cached rail is omitted when zero so an uncached turn stays terse.
         parts = [f"↑{compact_tokens(inp)}", f"↓{compact_tokens(out)}"]
