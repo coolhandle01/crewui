@@ -52,7 +52,7 @@ class TestDemoCrew:
     def test_build_demo_crew_is_offline_and_scripted(self) -> None:
         # Constructing the demo crew must not need a real API key, and its
         # kickoff must return the canned result without any network call.
-        from crewui.demo import build_demo_crew
+        from crewui.demo import _PHASES, build_demo_crew
 
         crew = build_demo_crew()
         assert [t.name for t in crew.tasks] == ["Destination Research", "Itinerary", "Budget"]
@@ -66,15 +66,20 @@ class TestDemoCrew:
         assert len(fired) == 3
         # Two steps per phase (an AgentAction then an AgentFinish).
         assert len(steps) == 6
+        # Independent oracles on the aggregate: the sum of every phase's tokens.
         assert result.token_usage.total_tokens == 4670
-        # Cached is the sum of the per-turn cache hits (0 + 896 + 1408).
         assert result.token_usage.cached_prompt_tokens == 2304
         assert "complete" in result.raw
-        # The demo drives the *real* per-turn path: it ticks each agent's live
-        # token accumulator (the one a live run's LLM callback feeds), rather
-        # than faking usage onto the TaskOutput.
-        assert crew.tasks[1].agent._token_process.get_summary().prompt_tokens == 1610
-        assert crew.tasks[2].agent._token_process.get_summary().cached_prompt_tokens == 1408
+        # The demo drives the *real* per-turn path: kickoff ticks each agent's
+        # live token accumulator (the one a live run's LLM callback feeds) with
+        # its own phase's counts, rather than faking usage onto the TaskOutput.
+        # Asserting the whole phase->agent mapping catches a mis-zipped or
+        # wrong-field wiring that a single spot-check would miss.
+        for phase, task in zip(_PHASES, crew.tasks, strict=True):
+            summary = task.agent._token_process.get_summary()
+            assert summary.prompt_tokens == phase.input_tokens
+            assert summary.completion_tokens == phase.output_tokens
+            assert summary.cached_prompt_tokens == phase.cached_tokens
 
     def test_run_demo_launches_the_tui(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # run_demo should construct the App and call .run(); stub run() so no
