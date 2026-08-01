@@ -1,4 +1,4 @@
-name: meta
+name: analysers
 
 # Checks on the repository itself rather than on crewui's behaviour. The tool's
 # own suite lives in tests.yml.
