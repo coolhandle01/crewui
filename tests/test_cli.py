@@ -64,8 +64,9 @@ class TestDemoCrew:
             task.callback = fired.append
         result = crew.kickoff()
         assert len(fired) == 3
-        # Two steps per phase (an AgentAction then an AgentFinish).
-        assert len(steps) == 6
+        # One step per phase - the AgentFinish answer. Tool calls no longer go
+        # through the step callback; they are emitted on the event bus instead.
+        assert len(steps) == 3
         # Independent oracles on the aggregate: the sum of every phase's tokens.
         assert result.token_usage.total_tokens == 4670
         assert result.token_usage.cached_prompt_tokens == 2304

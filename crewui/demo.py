@@ -31,10 +31,16 @@ import os
 import time
 import types
 from dataclasses import dataclass
+from datetime import datetime
 from typing import NamedTuple
 
 from crewai import Agent, Crew, Process, Task
-from crewai.agents.parser import AgentAction, AgentFinish
+from crewai.agents.parser import AgentFinish
+from crewai.events import (
+    ToolUsageFinishedEvent,
+    ToolUsageStartedEvent,
+    crewai_event_bus,
+)
 
 from crewui.app import CrewAIPipelineTUI
 
@@ -134,26 +140,36 @@ class _TaskOut:
 def _scripted_kickoff(crew: Crew) -> _Result:
     """Walk the crew's tasks without calling an LLM.
 
-    For each task: stream a Thought + tool-call and an Answer through the crew's
-    ``step_callback`` (both set by the App before this runs), pause briefly so
-    the transition is visible, then fire the task's ``callback`` with a
-    ``_TaskOut`` carrying that turn's token usage (which the App renders on the
-    box subtitle). Returns a canned result whose ``token_usage`` is the sum of
+    For each task: emit a tool call on CrewAI's event bus (which the App renders
+    as a collapsed box), pause so the tool reads as running, emit its result,
+    then stream the Answer through the crew's ``step_callback``. Finally fire the
+    task's ``callback`` (which drives the box subtitle off the token accumulator
+    ticked below). Returns a canned result whose ``token_usage`` is the sum of
     the turns, so the App's metrics block totals match.
+
+    The tool events are the genuine article, emitted exactly as a live run's
+    tool execution emits them - so the demo drives the real collapsible path,
+    not a faked step. The brief pause between Started and Finished stands in for
+    the tool actually running.
     """
     agg_in = agg_out = agg_cached = 0
     for task, phase in zip(crew.tasks, _PHASES, strict=True):
-        if crew.step_callback is not None:
-            crew.step_callback(
-                AgentAction(
-                    thought=phase.thought,
-                    tool=phase.tool,
-                    tool_input=phase.tool_input,
-                    text="",
-                    result=phase.tool_result,
-                )
-            )
+        started = datetime.now()
+        crewai_event_bus.emit(
+            crew, ToolUsageStartedEvent(tool_name=phase.tool, tool_args=phase.tool_input)
+        )
         time.sleep(0.6)
+        crewai_event_bus.emit(
+            crew,
+            ToolUsageFinishedEvent(
+                tool_name=phase.tool,
+                tool_args=phase.tool_input,
+                output=phase.tool_result,
+                started_at=started,
+                finished_at=datetime.now(),
+                from_cache=phase.cached_tokens > 0,
+            ),
+        )
         if crew.step_callback is not None:
             crew.step_callback(
                 AgentFinish(thought=phase.thought, output=phase.answer, text=phase.answer)
