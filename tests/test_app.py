@@ -366,6 +366,15 @@ class TestAgentSession:
     'you' box echoing each submitted feedback round.
     """
 
+    def test_agent_label_falls_back_when_task_index_out_of_range(
+        self, make_crew: MakeCrew
+    ) -> None:
+        # A box opened for a task that is not introspectable (index past the end,
+        # or an agent that raises on access) must still get a generic title
+        # rather than crash the session.
+        app = CrewAIPipelineTUI(crew=make_crew())
+        assert app._agent_label(99) == "Agent"
+
     async def test_agent_turn_box_is_titled_with_role(self, make_crew: MakeCrew) -> None:
         app = CrewAIPipelineTUI(crew=make_crew())
         async with app.run_test() as pilot:
