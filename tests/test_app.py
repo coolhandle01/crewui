@@ -654,6 +654,46 @@ class TestToolCalls:
             await pilot.pause(0.05)
             assert not app.query(".tool-call")
 
+    async def test_sequential_tool_calls_each_get_their_own_box(
+        self, make_crew: MakeCrew
+    ) -> None:
+        # crewai emits one Started/Finished pair at a time; the pending box must
+        # be matched to its own result, not overwritten by the next call.
+        app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
+        async with app.run_test() as pilot:
+            app._open_agent_turn(0)
+            await pilot.pause(0.05)
+            app._tool_started_ui("browse", {"q": "programmes"})
+            app._tool_finished_ui("found 10", from_cache=False, ok=True)
+            app._tool_started_ui("hydrate", {"handle": "cloudflare"})
+            app._tool_finished_ui("scope: *.cloudflare.com", from_cache=True, ok=True)
+            await pilot.pause(0.05)
+            colls = list(app.query(".tool-call").results(Collapsible))
+            assert len(colls) == 2
+
+            def body(coll: Collapsible) -> str:
+                return " ".join(str(s.render()) for s in coll.query(".tool-out").results(Static))
+
+            assert colls[0].title.startswith("> browse")
+            assert "found 10" in body(colls[0])
+            assert "⚡" not in colls[0].title  # first was not cached
+            assert colls[1].title.startswith("> hydrate")
+            assert "⚡" in colls[1].title  # second was
+            assert "cloudflare.com" in body(colls[1])  # the result did not leak into box 1
+
+    async def test_turn_with_no_tool_calls_renders_text_only(self, make_crew: MakeCrew) -> None:
+        app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
+        async with app.run_test() as pilot:
+            app._open_agent_turn(0)
+            await pilot.pause(0.05)
+            app._write_agent("just an answer, no tools")
+            await pilot.pause(0.05)
+            turn = app.query_one(".agent-turn", Vertical)
+            # A tool-free turn is exactly text - no empty or stray tool boxes.
+            assert not turn.query(".tool-call")
+            text = " ".join(str(s.render()) for s in turn.query(".agent-text").results(Static))
+            assert "just an answer, no tools" in text
+
     async def test_prose_after_a_tool_opens_a_fresh_text_block(self, make_crew: MakeCrew) -> None:
         app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
         async with app.run_test() as pilot:
