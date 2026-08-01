@@ -16,6 +16,7 @@ from types import SimpleNamespace
 from typing import cast
 
 import psutil
+from textual.containers import VerticalScroll
 from textual.widgets import Label, RichLog, Static
 
 from crewui.app import (
@@ -158,7 +159,10 @@ class TestErrorPath:
         app = CrewAIPipelineTUI(crew=make_crew(raise_on_kickoff=True))
         async with app.run_test() as pilot:
             def logged() -> bool:
-                return len(app.query_one("#agent-log", RichLog).lines) > 0
+                return any(
+                    "Pipeline error" in str(box.render())
+                    for box in app.query(".agent-turn").results(Static)
+                )
 
             assert await _wait_for(pilot, logged)
             # The run raised inside kickoff; the UI stays up and the sidebar
@@ -272,14 +276,14 @@ class TestHumanReview:
             await pilot.press("enter")
             worker.join(timeout=2)
 
-    async def test_open_gate_without_agent_log_still_enables_input(
+    async def test_open_gate_without_agent_session_still_enables_input(
         self, make_crew: MakeCrew
     ) -> None:
         app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
         async with app.run_test() as pilot:
-            # Remove the agent-log pane, then open the gate: the panel write is
+            # Remove the session pane, then open the gate: the gate-box mount is
             # skipped (NoMatches) but the input must still enable and focus.
-            await app.query_one("#agent-log", RichLog).remove()
+            await app.query_one("#agent-session", VerticalScroll).remove()
             await pilot.pause(0.02)
             app._open_feedback_gate()
             inp = app.query_one("#human-input", FeedbackArea)
@@ -298,6 +302,131 @@ class TestHumanReview:
             await pilot.pause(0.05)
             assert inp.text == "stray"
 
+    async def test_full_review_round_reinvokes_and_renders(self, make_crew: MakeCrew) -> None:
+        """The seam neither layer tested alone: crewai's real handle_feedback,
+        driven through crewui's provider and a pilot-typed gate, re-invokes the
+        agent - and the round is legible (a gate box and an echoed 'you' box).
+        """
+
+        class _Answer:
+            def __init__(self, output: str) -> None:
+                self.output = output
+
+        class _Ctx:
+            """The subset of crewai's ExecutorContext SyncHumanInputProvider uses."""
+
+            def __init__(self) -> None:
+                self.ask_for_human_input = True
+                self.messages: list[dict[str, str]] = []
+                self.crew = None
+                self.invoke_count = 0
+
+            def _is_training_mode(self) -> bool:
+                return False
+
+            def _format_feedback_message(self, feedback: str) -> dict[str, str]:
+                return {"role": "user", "content": feedback}
+
+            def _invoke_loop(self) -> _Answer:
+                self.invoke_count += 1
+                return _Answer(f"revised #{self.invoke_count}")
+
+        app = CrewAIPipelineTUI(crew=make_crew())
+        async with app.run_test() as pilot:
+            provider = _make_tui_human_input_provider(app)
+            ctx = _Ctx()
+
+            def drive() -> None:
+                provider.handle_feedback(_Answer("original"), ctx)
+
+            worker = threading.Thread(target=drive)
+            worker.start()
+            inp = app.query_one("#human-input", FeedbackArea)
+            assert await _wait_for(pilot, lambda: not inp.disabled)
+            inp.focus()
+            await pilot.press(*"pick basecamp")
+            await pilot.press("enter")
+            # handle_feedback loops - it prompts again after re-invoking. Submit
+            # empty to accept and unwind the loop.
+            assert await _wait_for(pilot, lambda: not inp.disabled)
+            inp.focus()
+            await pilot.press("enter")
+            worker.join(timeout=5)
+
+            assert ctx.invoke_count == 1
+            assert any("basecamp" in m["content"] for m in ctx.messages)
+            # The round is visible in the session, not just applied in the model.
+            assert list(app.query(".you-box"))
+            assert list(app.query(".gate-box"))
+
+
+class TestAgentSession:
+    """The agent pane is a scroll of decorated per-turn boxes: a green box per
+    agent turn (role/model on the top rail), a centred gate box, and a blue
+    'you' box echoing each submitted feedback round.
+    """
+
+    async def test_agent_turn_box_is_titled_with_role(self, make_crew: MakeCrew) -> None:
+        app = CrewAIPipelineTUI(crew=make_crew())
+        async with app.run_test() as pilot:
+
+            def has_scout_box() -> bool:
+                return any(
+                    box.border_title == "scout"
+                    for box in app.query(".agent-turn").results(Static)
+                )
+
+            assert await _wait_for(pilot, has_scout_box)
+
+    async def test_gate_opens_a_titled_gate_box(self, make_crew: MakeCrew) -> None:
+        app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
+        async with app.run_test() as pilot:
+            app._open_feedback_gate()
+            await pilot.pause(0.05)
+            boxes = list(app.query(".gate-box").results(Static))
+            assert len(boxes) == 1
+            assert boxes[0].border_title == "Human Review Requested"
+
+    async def test_feedback_echoes_a_you_box(self, make_crew: MakeCrew) -> None:
+        app = CrewAIPipelineTUI(crew=make_crew())
+        async with app.run_test() as pilot:
+            captured: list[str] = []
+
+            def ask() -> None:
+                captured.append(app._await_feedback())
+
+            worker = threading.Thread(target=ask)
+            worker.start()
+            inp = app.query_one("#human-input", FeedbackArea)
+            assert await _wait_for(pilot, lambda: not inp.disabled)
+            inp.focus()
+            await pilot.press(*"pick basecamp")
+            await pilot.press("enter")
+            worker.join(timeout=2)
+            await pilot.pause(0.05)
+            you = list(app.query(".you-box").results(Static))
+            assert len(you) == 1
+            assert you[0].border_title == "you"
+            assert "pick basecamp" in str(you[0].render())
+
+    async def test_empty_feedback_echoes_no_you_box(self, make_crew: MakeCrew) -> None:
+        app = CrewAIPipelineTUI(crew=make_crew())
+        async with app.run_test() as pilot:
+            captured: list[str] = []
+
+            def ask() -> None:
+                captured.append(app._await_feedback())
+
+            worker = threading.Thread(target=ask)
+            worker.start()
+            inp = app.query_one("#human-input", FeedbackArea)
+            assert await _wait_for(pilot, lambda: not inp.disabled)
+            inp.focus()
+            await pilot.press("enter")  # empty submit = accept as-is
+            worker.join(timeout=2)
+            await pilot.pause(0.05)
+            assert list(app.query(".you-box")) == []
+
 
 class TestLogHandler:
     async def test_agent_prefixed_records_go_to_agent_log(self, make_crew: MakeCrew) -> None:
@@ -314,7 +443,10 @@ class TestLogHandler:
             worker.start()
             worker.join(timeout=2)
             await pilot.pause(0.1)
-            assert len(app.query_one("#agent-log", RichLog).lines) >= 1
+            assert any(
+                "agent line" in str(box.render())
+                for box in app.query(".agent-turn").results(Static)
+            )
             assert len(app.query_one("#crew-log", RichLog).lines) >= 1
 
 
@@ -331,7 +463,7 @@ class TestDefensiveBranches:
             # Remove the log panes, then write: query_one now raises NoMatches
             # (the screen exists, the widget does not) - exactly the teardown
             # race the branch guards - and both writers must swallow it.
-            await app.query_one("#agent-log", RichLog).remove()
+            await app.query_one("#agent-session", VerticalScroll).remove()
             await app.query_one("#crew-log", RichLog).remove()
             await pilot.pause(0.02)
             app._write_agent("nowhere")
@@ -377,7 +509,7 @@ class TestHumanInputProvider:
         # crewai calls _prompt_input(crew) and, since 1.15.x, also passes the
         # answer under review as output_to_review. Both shapes must reach the
         # bridge unchanged; the review text is ignored (the step-callback
-        # already streamed it into the agent-log pane).
+        # already streamed it into the agent session).
         assert provider._prompt_input(crew=None) == "tighten the title"
         assert (
             provider._prompt_input(crew=None, output_to_review="The sky is blue.")

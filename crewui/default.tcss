@@ -77,19 +77,53 @@ Screen {
     height: 1;
 }
 
-#agent-log {
+#agent-session {
     height: 1fr;
+    padding: 0 1;
+    overflow-y: auto;
+}
+
+/* One box per agent turn: role and model on the top rail, per-turn token cost
+   on the bottom rail (border_subtitle, set on completion). */
+.agent-turn {
+    border: round $success;
+    border-title-align: left;
+    border-subtitle-align: right;
+    height: auto;
+    margin: 1 0 0 0;
+    padding: 0 1;
+}
+
+/* The human-review prompt - unmissable, centred title. */
+.gate-box {
+    border: round $warning;
+    border-title-align: center;
+    color: $warning;
+    height: auto;
+    margin: 1 0 0 0;
+    padding: 1 2;
+}
+
+/* An echoed operator turn: blue, labelled "you" on the right rail to mirror
+   the agent boxes. */
+.you-box {
+    border: round $primary;
+    border-title-align: right;
+    height: auto;
+    margin: 1 0 0 0;
     padding: 0 1;
 }
 
 #human-input {
     margin: 0 1 1 1;
     height: 5;
-    border: round $surface;
+    border: round $primary;
+    border-title-align: right;
 }
 
 #human-input:focus {
     border: round $accent;
+    border-title-align: right;
 }
 
 #human-input:disabled {

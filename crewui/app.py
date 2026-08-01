@@ -26,13 +26,13 @@ from typing import TYPE_CHECKING
 
 import psutil
 from crewai import Crew
-from rich.panel import Panel
+from rich.text import Text
 from textual import events, work
 from textual.app import App, ComposeResult
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.message import Message
-from textual.widgets import Label, RichLog, Static, TextArea
+from textual.widgets import Label, RichLog, Rule, Static, TextArea
 
 from crewui._helpers import (
     dispatch_on_ui_thread,
@@ -112,6 +112,14 @@ class CrewAIPipelineTUI(App[None]):
         self._on_complete = on_complete
         self._get_token_cost = get_token_cost
         self._task_widgets: list[tuple[Label, Label]] = []
+        # Agent Session: each agent turn is a bordered Static we accumulate into.
+        # _turn_box is the box currently streamed into (None -> the next agent
+        # write opens a fresh one); _turn_lines is its accumulated markup; and
+        # _current_task_idx names whose role/model titles a freshly opened box
+        # (e.g. the re-invoked answer after a human-review round).
+        self._turn_box: Static | None = None
+        self._turn_lines: list[str] = []
+        self._current_task_idx: int = 0
         # Human-review bridge: the worker thread parks on this event while the
         # operator types feedback into the input box on the UI thread.
         self._feedback_event: threading.Event | None = None
@@ -144,8 +152,8 @@ class CrewAIPipelineTUI(App[None]):
 
             with Vertical(id="main"):
                 with Vertical(id="messages-pane"):
-                    yield Label("Agent Output", classes="pane-title")
-                    yield RichLog(id="agent-log", highlight=True, markup=True, wrap=True)
+                    yield Label("Agent Session", classes="pane-title")
+                    yield VerticalScroll(id="agent-session")
                     yield FeedbackArea(
                         "",
                         id="human-input",
@@ -168,6 +176,10 @@ class CrewAIPipelineTUI(App[None]):
         # keeps running after the TUI closes.
         self._log_handler = _TUILogHandler(self)
         logging.getLogger().addHandler(self._log_handler)
+        # The feedback box is the operator's turn; label its border "you" so a
+        # submitted round reads like a chat turn beside the agent boxes.
+        with contextlib.suppress(NoMatches):
+            self.query_one("#human-input", FeedbackArea).border_title = "you"
         if self._dry_run:
             self._write_crew("[yellow]Dry run mode: pipeline not started.[/yellow]")
             # Render the metrics block zeroed so the sidebar reads as a complete
@@ -234,6 +246,10 @@ class CrewAIPipelineTUI(App[None]):
         return _cb
 
     def _set_task_running(self, idx: int) -> None:
+        # A running task is a fresh agent turn: open its box so its role/model
+        # titles the border and its output streams in below.
+        self._current_task_idx = idx
+        self._open_agent_turn(idx)
         if idx < len(self._task_widgets):
             name_lbl, status_lbl = self._task_widgets[idx]
             name_lbl.add_class("running")
@@ -285,11 +301,67 @@ class CrewAIPipelineTUI(App[None]):
         except NoMatches:
             logger.debug("metrics widget not mounted")
 
-    def _write_agent(self, msg: str) -> None:
+    def _agent_label(self, idx: int) -> str:
+        """``role · model`` for task ``idx``'s agent, best-effort.
+
+        Falls back to the role alone (or ``"Agent"``) when the model or agent
+        is not introspectable - a partially-wired crew must never break a box.
+        """
         try:
-            self.query_one("#agent-log", RichLog).write(msg)
+            agent = self._crew.tasks[idx].agent
+        except (IndexError, AttributeError):
+            return "Agent"
+        role = getattr(agent, "role", None) or "Agent"
+        model = getattr(getattr(agent, "llm", None), "model", None)
+        return f"{role} · {model}" if model else role
+
+    def _separate(self, session: VerticalScroll) -> None:
+        """A rule between turns - never above the first one."""
+        if session.children:
+            session.mount(Rule())
+
+    def _open_agent_turn(self, idx: int) -> None:
+        """Mount a fresh agent box, titled with the agent's role and model, and
+        make it the box that subsequent output streams into."""
+        try:
+            session = self.query_one("#agent-session", VerticalScroll)
         except NoMatches:
-            logger.debug("agent-log widget not mounted, dropping message")
+            logger.debug("agent-session not mounted, cannot open a turn")
+            return
+        self._separate(session)
+        box = Static("", classes="agent-turn")
+        box.border_title = self._agent_label(idx)
+        session.mount(box)
+        self._turn_box = box
+        self._turn_lines = []
+        session.scroll_end(animate=False)
+
+    def _mount_note(self, css_class: str, title: str, body: str) -> None:
+        """Mount a non-agent box - the review prompt, or an echoed operator turn
+        - and end any in-progress agent turn so the next agent output opens
+        its own fresh box. ``body`` is rendered literally (markup off): operator
+        feedback may contain brackets."""
+        try:
+            session = self.query_one("#agent-session", VerticalScroll)
+        except NoMatches:
+            logger.debug("agent-session not mounted, dropping %s box", css_class)
+            self._turn_box = None
+            return
+        box = Static(body, classes=css_class, markup=False)
+        box.border_title = title
+        session.mount(box)
+        self._turn_box = None
+        session.scroll_end(animate=False)
+
+    def _write_agent(self, msg: str) -> None:
+        if self._turn_box is None:
+            self._open_agent_turn(self._current_task_idx)
+        if self._turn_box is None:  # session not mounted - nothing to write into
+            return
+        self._turn_lines.append(msg)
+        self._turn_box.update(Text.from_markup("\n\n".join(self._turn_lines)))
+        with contextlib.suppress(NoMatches):
+            self.query_one("#agent-session", VerticalScroll).scroll_end(animate=False)
 
     def _write_crew(self, msg: str) -> None:
         try:
@@ -383,25 +455,16 @@ class CrewAIPipelineTUI(App[None]):
         return self._feedback_value
 
     def _open_feedback_gate(self) -> None:
-        try:
-            log = self.query_one("#agent-log", RichLog)
-        except NoMatches:
-            logger.debug("agent-log widget not mounted, cannot open feedback gate")
-        else:
-            # A blank line sets the review prompt apart from the streamed output
-            # above it, then a bordered panel makes the gate unmissable.
-            log.write("")
-            log.write(
-                Panel(
-                    "Review the result above.\n\n"
-                    "Type your feedback, then press Enter to submit "
-                    "(Ctrl+J for a newline).\n"
-                    "Submit an empty box to accept the result as-is.",
-                    title="Human Review Requested",
-                    border_style="yellow",
-                    padding=(1, 2),
-                )
-            )
+        # A bordered box in the session makes the gate unmissable and ends the
+        # agent's turn; the input box below is where the operator answers.
+        self._mount_note(
+            "gate-box",
+            "Human Review Requested",
+            "Review the result above.\n\n"
+            "Type your feedback, then press Enter to submit "
+            "(Ctrl+J for a newline).\n"
+            "Submit an empty box to accept the result as-is.",
+        )
         inp = self.query_one("#human-input", FeedbackArea)
         inp.placeholder = "Enter submits - Ctrl+J for a newline - empty accepts"
         inp.disabled = False
@@ -411,6 +474,10 @@ class CrewAIPipelineTUI(App[None]):
         if self._feedback_event is None:
             return
         self._feedback_value = event.value
+        # Echo the operator's turn into the session so a submitted round is
+        # visible; an empty submit ("accept as-is") has nothing to show.
+        if event.value.strip():
+            self._mount_note("you-box", "you", event.value)
         inp = self.query_one("#human-input", FeedbackArea)
         inp.text = ""
         inp.disabled = True
