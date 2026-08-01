@@ -16,7 +16,7 @@ from types import SimpleNamespace
 from typing import cast
 
 import psutil
-from textual.containers import VerticalScroll
+from textual.containers import Vertical, VerticalScroll
 from textual.widgets import Label, RichLog, Static
 
 from crewui.app import (
@@ -176,7 +176,7 @@ class TestErrorPath:
             def logged() -> bool:
                 return any(
                     "Pipeline error" in str(box.render())
-                    for box in app.query(".agent-turn").results(Static)
+                    for box in app.query(".agent-text").results(Static)
                 )
 
             assert await _wait_for(pilot, logged)
@@ -397,7 +397,7 @@ class TestAgentSession:
             def has_scout_box() -> bool:
                 return any(
                     box.border_title == "scout"
-                    for box in app.query(".agent-turn").results(Static)
+                    for box in app.query(".agent-turn").results(Vertical)
                 )
 
             assert await _wait_for(pilot, has_scout_box)
@@ -572,7 +572,7 @@ class TestLogHandler:
             await pilot.pause(0.1)
             assert any(
                 "agent line" in str(box.render())
-                for box in app.query(".agent-turn").results(Static)
+                for box in app.query(".agent-text").results(Static)
             )
             assert len(app.query_one("#crew-log", RichLog).lines) >= 1
 

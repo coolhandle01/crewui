@@ -113,12 +113,18 @@ class CrewAIPipelineTUI(App[None]):
         self._on_complete = on_complete
         self._get_token_cost = get_token_cost
         self._task_widgets: list[tuple[Label, Label]] = []
-        # Agent Session: each agent turn is a bordered Static we accumulate into.
-        # _turn_box is the box currently streamed into (None -> the next agent
-        # write opens a fresh one); _turn_lines is its accumulated markup; and
-        # _current_task_idx names whose role/model titles a freshly opened box
-        # (e.g. the re-invoked answer after a human-review round).
-        self._turn_box: Static | None = None
+        # Agent Session: each agent turn is a bordered container (.agent-turn)
+        # holding the agent's text (an .agent-text Static that output accumulates
+        # into) plus any tool-call boxes, mounted in the order they happen.
+        # _turn_box is the container currently written into (None -> the next
+        # agent write opens a fresh one); _turn_text is the Static within it that
+        # text accumulates into (None -> the next write mounts a fresh one, so a
+        # tool box between two runs of text does not merge them); _turn_lines is
+        # that Static's accumulated markup; _current_task_idx names whose
+        # role/model titles a freshly opened box (e.g. the re-invoked answer
+        # after a human-review round).
+        self._turn_box: Vertical | None = None
+        self._turn_text: Static | None = None
         self._turn_lines: list[str] = []
         self._current_task_idx: int = 0
         # Per-turn token spend: each agent holds a live token accumulator that
@@ -384,18 +390,25 @@ class CrewAIPipelineTUI(App[None]):
             session.mount(Rule())
 
     def _open_agent_turn(self, idx: int) -> None:
-        """Mount a fresh agent box, titled with the agent's role and model, and
-        make it the box that subsequent output streams into."""
+        """Mount a fresh agent turn: a bordered container titled with the agent's
+        role and model, holding an initial text Static that output streams into.
+        Tool-call boxes mount into this same container as they happen."""
+        self._turn_box = None
+        self._turn_text = None
         try:
             session = self.query_one("#agent-session", VerticalScroll)
         except NoMatches:
             logger.debug("agent-session not mounted, cannot open a turn")
             return
         self._separate(session)
-        box = Static("", classes="agent-turn")
+        # The text Static is composed into the container so both mount together -
+        # mounting a child into a just-mounted container in the same tick races.
+        text = Static("", classes="agent-text")
+        box = Vertical(text, classes="agent-turn")
         box.border_title = self._agent_label(idx)
         session.mount(box)
         self._turn_box = box
+        self._turn_text = text
         self._turn_lines = []
         session.scroll_end(animate=False)
 
@@ -409,20 +422,22 @@ class CrewAIPipelineTUI(App[None]):
         except NoMatches:
             logger.debug("agent-session not mounted, dropping %s box", css_class)
             self._turn_box = None
+            self._turn_text = None
             return
         box = Static(body, classes=css_class, markup=False)
         box.border_title = title
         session.mount(box)
         self._turn_box = None
+        self._turn_text = None
         session.scroll_end(animate=False)
 
     def _write_agent(self, msg: str) -> None:
         if self._turn_box is None:
             self._open_agent_turn(self._current_task_idx)
-        if self._turn_box is None:  # session not mounted - nothing to write into
+        if self._turn_text is None:  # session not mounted - nothing to write into
             return
         self._turn_lines.append(msg)
-        self._turn_box.update(Text.from_markup("\n\n".join(self._turn_lines)))
+        self._turn_text.update(Text.from_markup("\n\n".join(self._turn_lines)))
         with contextlib.suppress(NoMatches):
             self.query_one("#agent-session", VerticalScroll).scroll_end(animate=False)
 
