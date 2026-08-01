@@ -73,6 +73,7 @@ dependencies = [
 dev = [
     "pytest>=8",
     "pytest-cov>=5",
+    "diff-cover>=9",  # per-PR coverage ratchet: 100% on the lines a PR touches
     "pytest-asyncio>=0.23",  # drives the textual.pilot harness for the App tests
     "mypy>=1.11",
     "types-psutil",  # stubs for the psutil runtime dep, so strict mypy stays green
