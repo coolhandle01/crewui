@@ -3,16 +3,24 @@
 ``crewui demo`` builds a small three-phase sequential crew and drives it through
 ``CrewAIPipelineTUI`` without any LLM call or network access. It exists so that
 ``pipx install crewui`` yields something immediately runnable - a live look at
-the sidebar tracker, the agent-output stream, and the pipeline log - and so the
+the agent session, the sidebar tracker, and the pipeline log - and so the
 release smoke test has an entry point that exercises the real App end to end.
+
+The pipeline is a domain-neutral one (planning a long weekend), deliberately
+*not* tied to any downstream app: crewui is a UI for CrewAI pipelines in
+general, so its demo reads like anyone's crew, not one particular product's.
 
 The crew is a genuine ``crewai.Crew`` of genuine ``Agent`` / ``Task`` objects
 (so the sidebar reads real ``Task.name`` / ``agent.role`` values), but its
 ``kickoff`` is replaced with a scripted walk that emits canned step messages
 and fires each task callback in turn. That keeps the demo deterministic and
 free of API keys while still driving every code path the App uses to render a
-run: step callbacks, per-task status transitions, and the final result +
-token-usage block.
+run: step callbacks, per-task status transitions, per-turn token subtitles,
+and the final result + token-usage block.
+
+Per-turn token counts are faked here because crewai's ``TaskOutput`` carries no
+per-task usage - so on a *real* run the App leaves each box's subtitle blank,
+while the demo supplies one so the feature is visible.
 """
 
 from __future__ import annotations
@@ -21,54 +29,77 @@ import os
 import time
 import types
 from dataclasses import dataclass
+from typing import NamedTuple
 
 from crewai import Agent, Crew, Process, Task
 from crewai.agents.parser import AgentAction, AgentFinish
 
 from crewui.app import CrewAIPipelineTUI
 
-# The demo's scripted phases: (task name, agent role, thought, tool, tool input,
-# tool result, final answer). Nothing here is sent anywhere - it is canned prose
-# rendered into the panes so the layout and status flow are visible.
+
+class _Phase(NamedTuple):
+    """One scripted turn: the prose rendered into the panes, plus the per-turn
+    token counts hung on the box's subtitle. Nothing is sent anywhere."""
+
+    name: str
+    role: str
+    thought: str
+    tool: str
+    tool_input: str
+    tool_result: str
+    answer: str
+    input_tokens: int
+    output_tokens: int
+
+
+# "Plan a long weekend in Lisbon" - a neutral, widely legible pipeline in the
+# shape CrewAI's own examples use (research -> plan -> cost).
 _PHASES = [
-    (
-        "Reconnaissance",
-        "Scout",
-        "Map the surface before touching anything.",
-        "enumerate",
-        "example.com",
-        "found 3 subdomains, 2 open ports",
-        "Surface mapped: api.example.com, www.example.com, mail.example.com.",
+    _Phase(
+        name="Destination Research",
+        role="Destination Researcher",
+        thought="Get the lay of the land before planning any days.",
+        tool="search_web",
+        tool_input="Lisbon, long weekend in October",
+        tool_result="mild ~22C; Alfama, Belem, Sintra; trams busy midday",
+        answer="Lisbon in October is warm and walkable. Anchors: Alfama, Belem, a Sintra day trip.",
+        input_tokens=1180,
+        output_tokens=260,
     ),
-    (
-        "Analysis",
-        "Analyst",
-        "Weigh what the scout turned up.",
-        "assess",
-        "3 subdomains",
-        "api.example.com exposes an unauthenticated debug route",
-        "One notable exposure on api.example.com; the rest look routine.",
+    _Phase(
+        name="Itinerary",
+        role="Itinerary Planner",
+        thought="Turn the highlights into a sane day-by-day plan.",
+        tool="build_itinerary",
+        tool_input="3 days: Alfama, Belem, Sintra",
+        tool_result="Fri Alfama + Fado; Sat Belem + Time Out Market; Sun Sintra",
+        answer="Fri: Alfama + Fado. Sat: Belem + Time Out Market. Sun: Sintra day trip.",
+        input_tokens=1610,
+        output_tokens=430,
     ),
-    (
-        "Report",
-        "Scribe",
-        "Write it up so a human can act on it.",
-        "compose",
-        "1 finding",
-        "drafted a 1-paragraph summary",
-        "Report ready: 1 finding worth a closer look on api.example.com.",
+    _Phase(
+        name="Budget",
+        role="Local Budget Expert",
+        thought="Price it up so there are no surprises.",
+        tool="estimate_costs",
+        tool_input="3 days, mid-range, 1 traveller",
+        tool_result="stay 330, food 150, transit + Sintra 60 (EUR)",
+        answer="Rough budget ~EUR 540: stay EUR 330, food EUR 150, transit and Sintra EUR 60.",
+        input_tokens=980,
+        output_tokens=210,
     ),
 ]
 
 
 @dataclass
 class _Usage:
-    """Stand-in for CrewAI's token-usage object; only these three fields are
-    read by the App's metrics block."""
+    """Stand-in for CrewAI's UsageMetrics - the fields the App's metrics block
+    and per-turn subtitle read."""
 
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
+    cached_prompt_tokens: int = 0
 
 
 @dataclass
@@ -79,33 +110,66 @@ class _Result:
     token_usage: _Usage
 
 
+@dataclass
+class _TaskOut:
+    """Stand-in for a crewai ``TaskOutput`` handed to a task callback. Real
+    TaskOutput carries no per-task usage, so the App reads ``token_usage``
+    defensively; the demo supplies it to drive the per-turn subtitle."""
+
+    raw: str
+    token_usage: _Usage
+
+
 def _scripted_kickoff(crew: Crew) -> _Result:
     """Walk the crew's tasks without calling an LLM.
 
     For each task: stream a Thought + tool-call and an Answer through the crew's
     ``step_callback`` (both set by the App before this runs), pause briefly so
-    the transition is visible, then fire the task's ``callback`` to advance the
-    sidebar. Returns a canned result carrying ``raw`` + ``token_usage`` so the
-    App renders the completion panel and metrics block.
+    the transition is visible, then fire the task's ``callback`` with a
+    ``_TaskOut`` carrying that turn's token usage (which the App renders on the
+    box subtitle). Returns a canned result whose ``token_usage`` is the sum of
+    the turns, so the App's metrics block totals match.
     """
+    agg_in = agg_out = 0
     for task, phase in zip(crew.tasks, _PHASES, strict=True):
-        _, _, thought, tool, tool_input, tool_result, answer = phase
         if crew.step_callback is not None:
             crew.step_callback(
                 AgentAction(
-                    thought=thought, tool=tool, tool_input=tool_input, text="", result=tool_result
+                    thought=phase.thought,
+                    tool=phase.tool,
+                    tool_input=phase.tool_input,
+                    text="",
+                    result=phase.tool_result,
                 )
             )
         time.sleep(0.6)
         if crew.step_callback is not None:
-            crew.step_callback(AgentFinish(thought=thought, output=answer, text=answer))
+            crew.step_callback(
+                AgentFinish(thought=phase.thought, output=phase.answer, text=phase.answer)
+            )
+        agg_in += phase.input_tokens
+        agg_out += phase.output_tokens
         if task.callback is not None:
-            task.callback(answer)
+            task.callback(
+                _TaskOut(
+                    raw=phase.answer,
+                    token_usage=_Usage(
+                        prompt_tokens=phase.input_tokens,
+                        completion_tokens=phase.output_tokens,
+                        total_tokens=phase.input_tokens + phase.output_tokens,
+                    ),
+                )
+            )
         time.sleep(0.4)
 
     return _Result(
-        raw="Demo pipeline complete - 3 phases, 1 finding.",
-        token_usage=_Usage(prompt_tokens=1200, completion_tokens=340, total_tokens=1540),
+        raw="Demo pipeline complete - a 3-day Lisbon plan, ~EUR 540.",
+        token_usage=_Usage(
+            prompt_tokens=agg_in,
+            completion_tokens=agg_out,
+            total_tokens=agg_in + agg_out,
+            cached_prompt_tokens=512,
+        ),
     )
 
 
@@ -120,21 +184,21 @@ def build_demo_crew() -> Crew:
 
     agents = []
     tasks = []
-    for name, role, *_ in _PHASES:
+    for phase in _PHASES:
         agent = Agent(
-            role=role,
-            goal=f"{role} phase of the demo pipeline",
-            backstory=f"The {role.lower()} in a small demonstration crew.",
+            role=phase.role,
+            goal=f"The {phase.name.lower()} step of a trip-planning pipeline.",
+            backstory=f"The {phase.role.lower()} on a small trip-planning crew.",
             llm="gpt-4o-mini",
             verbose=False,
         )
         agents.append(agent)
         tasks.append(
             Task(
-                description=f"{name} phase",
+                description=f"{phase.name} phase",
                 expected_output="a short summary",
                 agent=agent,
-                name=name,
+                name=phase.name,
             )
         )
 
@@ -152,7 +216,7 @@ def run_demo(dry_run: bool = False) -> None:
     CrewAIPipelineTUI(
         crew=build_demo_crew(),
         record_prefix="crewui.demo",
-        pipeline_name="crewui demo pipeline",
+        pipeline_name="crewui demo - Lisbon weekend",
         dry_run=dry_run,
         get_token_cost=lambda inp, out: (inp * 3 + out * 15) / 1_000_000,
     ).run()

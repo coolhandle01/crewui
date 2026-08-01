@@ -55,7 +55,7 @@ class TestDemoCrew:
         from crewui.demo import build_demo_crew
 
         crew = build_demo_crew()
-        assert [t.name for t in crew.tasks] == ["Reconnaissance", "Analysis", "Report"]
+        assert [t.name for t in crew.tasks] == ["Destination Research", "Itinerary", "Budget"]
 
         fired: list[object] = []
         steps: list[object] = []
@@ -66,7 +66,7 @@ class TestDemoCrew:
         assert len(fired) == 3
         # Two steps per phase (an AgentAction then an AgentFinish).
         assert len(steps) == 6
-        assert result.token_usage.total_tokens == 1540
+        assert result.token_usage.total_tokens == 4670
         assert "complete" in result.raw
 
     def test_run_demo_launches_the_tui(self, monkeypatch: pytest.MonkeyPatch) -> None:

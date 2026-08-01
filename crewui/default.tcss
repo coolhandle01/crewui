@@ -56,7 +56,7 @@ Screen {
     border-top: solid $surface;
     padding: 1;
     color: $text-muted;
-    height: 6;
+    height: 8;
 }
 
 #main {

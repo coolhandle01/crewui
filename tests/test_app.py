@@ -83,7 +83,7 @@ class TestDryRun:
             await pilot.pause(0.1)
             block = _metrics(app)
             assert " Status:  dry run" in block
-            assert " Tokens:  0" in block
+            assert " Total:   0" in block
             # Nothing ran, so no task callback fired and statuses stay Waiting.
             assert called == []
             assert _statuses(app) == ["Waiting", "Waiting", "Waiting"]
@@ -97,10 +97,12 @@ class TestRun:
             # the sidebar Done, but the metrics land in a later call_from_thread
             # (_on_done), so waiting for "Done" can observe the run in between
             # and read an empty block. Waiting for the metrics implies both.
-            assert await _wait_for(pilot, lambda: " Tokens:  140" in _metrics(app))
+            assert await _wait_for(pilot, lambda: " Total:   140" in _metrics(app))
             assert _statuses(app) == ["Done", "Done", "Done"]
             block = _metrics(app)
-            assert " Tokens:  140" in block
+            assert " Input:   100" in block
+            assert " Output:  40" in block
+            assert " Total:   140" in block
             assert " Cost:    $0.5000" in block
             assert " Status:  done" in block
 
@@ -124,8 +126,8 @@ class TestRun:
 
         app = CrewAIPipelineTUI(crew=make_crew(result=FakeResult(token_usage=NoTotal())))
         async with app.run_test() as pilot:
-            await _wait_for(pilot, lambda: " Tokens:  42" in _metrics(app))
-            assert " Tokens:  42" in _metrics(app)
+            await _wait_for(pilot, lambda: " Total:   42" in _metrics(app))
+            assert " Total:   42" in _metrics(app)
 
     async def test_on_complete_callback_receives_result(self, make_crew: MakeCrew) -> None:
         seen: list[object] = []
@@ -435,6 +437,33 @@ class TestAgentSession:
             worker.join(timeout=2)
             await pilot.pause(0.05)
             assert list(app.query(".you-box")) == []
+
+    async def test_task_usage_stamps_the_turn_subtitle(self, make_crew: MakeCrew) -> None:
+        app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
+        async with app.run_test() as pilot:
+            app._open_agent_turn(0)
+            await pilot.pause(0.05)
+
+            class _Usage:
+                prompt_tokens = 1180
+                completion_tokens = 260
+
+            class _Out:
+                token_usage = _Usage()
+
+            app._apply_turn_usage(_Out())
+            assert app._turn_box is not None
+            assert app._turn_box.border_subtitle == "↑1.2k · ↓260"
+
+    async def test_output_without_usage_leaves_subtitle_blank(self, make_crew: MakeCrew) -> None:
+        app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
+        async with app.run_test() as pilot:
+            app._open_agent_turn(0)
+            await pilot.pause(0.05)
+            # A plain crewai TaskOutput carries no token_usage - subtitle stays blank.
+            app._apply_turn_usage("no usage here")
+            assert app._turn_box is not None
+            assert not app._turn_box.border_subtitle
 
 
 class TestLogHandler:

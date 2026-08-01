@@ -108,18 +108,44 @@ class TestTaskLayout:
 
 
 class TestFormatMetricsBlock:
-    def test_renders_thousands_separator_and_fixed_decimals(self) -> None:
-        block = format_metrics_block(total_tokens=12345, estimated_cost_usd=0.0418)
-        assert " Tokens:  12,345" in block
+    def test_splits_tokens_and_renders_separators_and_decimals(self) -> None:
+        block = format_metrics_block(
+            input_tokens=9000,
+            output_tokens=3345,
+            cached_tokens=512,
+            total_tokens=12345,
+            estimated_cost_usd=0.0418,
+        )
+        assert " Input:   9,000" in block
+        assert " Output:  3,345" in block
+        assert " Cached:  512" in block
+        assert " Total:   12,345" in block
         assert " Cost:    $0.0418" in block
         assert " Status:  done" in block
 
     def test_status_override_renders_custom_status(self) -> None:
         # The dry-run sidebar renders the block zeroed with a "dry run" status.
-        block = format_metrics_block(total_tokens=0, estimated_cost_usd=0.0, status="dry run")
-        assert " Tokens:  0" in block
+        block = format_metrics_block(
+            input_tokens=0,
+            output_tokens=0,
+            cached_tokens=0,
+            total_tokens=0,
+            estimated_cost_usd=0.0,
+            status="dry run",
+        )
+        assert " Total:   0" in block
         assert " Cost:    $0.0000" in block
         assert " Status:  dry run" in block
+
+
+class TestCompactTokens:
+    def test_compacts_thousands_and_leaves_small_counts(self) -> None:
+        from crewui._helpers import compact_tokens
+
+        assert compact_tokens(1200) == "1.2k"
+        assert compact_tokens(1610) == "1.6k"
+        assert compact_tokens(340) == "340"
+        assert compact_tokens(0) == "0"
 
 
 class TestFormatStepMessage:

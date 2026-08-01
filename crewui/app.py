@@ -35,6 +35,7 @@ from textual.message import Message
 from textual.widgets import Label, RichLog, Rule, Static, TextArea
 
 from crewui._helpers import (
+    compact_tokens,
     dispatch_on_ui_thread,
     format_metrics_block,
     format_step_message,
@@ -186,7 +187,14 @@ class CrewAIPipelineTUI(App[None]):
             # preview rather than a blank panel - no run happened, so the
             # figures are zero and the status says so.
             self.query_one("#metrics", Static).update(
-                format_metrics_block(total_tokens=0, estimated_cost_usd=0.0, status="dry run")
+                format_metrics_block(
+                    input_tokens=0,
+                    output_tokens=0,
+                    cached_tokens=0,
+                    total_tokens=0,
+                    estimated_cost_usd=0.0,
+                    status="dry run",
+                )
             )
         else:
             self._start_run()
@@ -228,11 +236,27 @@ class CrewAIPipelineTUI(App[None]):
         self, idx: int, orig: Callable[..., None] | None
     ) -> Callable[..., None]:
         def _cb(output: object) -> None:
+            # Stamp the turn's token cost on its box subtitle before the sidebar
+            # advances (which opens the next box). No-op when the output carries
+            # no per-task usage - which is every real crewai TaskOutput; only the
+            # offline demo supplies it.
+            self.call_from_thread(self._apply_turn_usage, output)
             self.call_from_thread(self._set_task_done, idx)
             if orig is not None:
                 orig(output)
 
         return _cb
+
+    def _apply_turn_usage(self, output: object) -> None:
+        """Set the current turn box's ``border_subtitle`` to its token cost when
+        the task output exposes usage; a no-op otherwise."""
+        usage = getattr(output, "token_usage", None)
+        if usage is None or self._turn_box is None:
+            return
+        inp = getattr(usage, "prompt_tokens", 0)
+        out = getattr(usage, "completion_tokens", 0)
+        # up-arrow = input tokens, down-arrow = output tokens.
+        self._turn_box.border_subtitle = f"↑{compact_tokens(inp)} · ↓{compact_tokens(out)}"
 
     def _make_step_callback(self) -> Callable[[object], None]:
         def _cb(step: object) -> None:
@@ -290,10 +314,14 @@ class CrewAIPipelineTUI(App[None]):
 
         input_tokens = getattr(usage, "prompt_tokens", 0)
         output_tokens = getattr(usage, "completion_tokens", 0)
+        cached_tokens = getattr(usage, "cached_prompt_tokens", 0)
         cost = self._get_token_cost(input_tokens, output_tokens) if self._get_token_cost else 0.0
         try:
             self.query_one("#metrics", Static).update(
                 format_metrics_block(
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cached_tokens=cached_tokens,
                     total_tokens=getattr(usage, "total_tokens", input_tokens + output_tokens),
                     estimated_cost_usd=cost,
                 )

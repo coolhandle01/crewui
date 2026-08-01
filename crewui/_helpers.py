@@ -69,9 +69,37 @@ def task_layout(tasks: list[Any]) -> list[tuple[str, str]]:
     return layout
 
 
-def format_metrics_block(total_tokens: int, estimated_cost_usd: float, status: str = "done") -> str:
-    """Render the fixed-width metrics summary shown in the sidebar."""
-    return f" Tokens:  {total_tokens:,}\n Cost:    ${estimated_cost_usd:.4f}\n Status:  {status}"
+def format_metrics_block(
+    input_tokens: int,
+    output_tokens: int,
+    cached_tokens: int,
+    total_tokens: int,
+    estimated_cost_usd: float,
+    status: str = "done",
+) -> str:
+    """Render the fixed-width metrics summary shown in the sidebar.
+
+    Tokens are split input / output / cached / total so the panel reflects the
+    aggregate usage crewai reports (prompt / completion / cached_prompt) rather
+    than a single opaque count.
+    """
+    return (
+        f" Input:   {input_tokens:,}\n"
+        f" Output:  {output_tokens:,}\n"
+        f" Cached:  {cached_tokens:,}\n"
+        f" Total:   {total_tokens:,}\n"
+        f" Cost:    ${estimated_cost_usd:.4f}\n"
+        f" Status:  {status}"
+    )
+
+
+def compact_tokens(n: int) -> str:
+    """Compact a token count for a tight label: ``1200 -> '1.2k'``, ``340 -> '340'``.
+
+    Used on the per-turn box subtitle, where horizontal room on the border rail
+    is scarce.
+    """
+    return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
 
 
 def format_step_message(step: object) -> str:
