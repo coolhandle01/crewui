@@ -52,6 +52,12 @@ class _Phase(NamedTuple):
     output_tokens: int
 
 
+# The model shown on each agent box's title rail. The demo never calls it
+# (kickoff is scripted), so this is display-only - see build_demo_crew for why
+# it is a relabel rather than the constructed provider.
+_DEMO_MODEL = "claude-sonnet-5"
+
+
 # "Plan a long weekend in Lisbon" - a neutral, widely legible pipeline in the
 # shape CrewAI's own examples use (research -> plan -> cost).
 _PHASES = [
@@ -176,11 +182,14 @@ def _scripted_kickoff(crew: Crew) -> _Result:
 def build_demo_crew() -> Crew:
     """Build the offline demo crew with a scripted ``kickoff``.
 
-    A dummy ``ANTHROPIC_API_KEY`` is set only if none is present so that
+    A dummy ``OPENAI_API_KEY`` is set only if none is present so that
     constructing the agents never prompts; no request is ever made because
-    ``kickoff`` is replaced before the App can call it.
+    ``kickoff`` is replaced before the App can call it. The LLM is built against
+    a provider crewai bundles by default (openai) - so crewui, a generic UI,
+    needs no per-provider extra to run its own demo - then relabelled to the
+    model a reader would really run, purely for the box title.
     """
-    os.environ.setdefault("ANTHROPIC_API_KEY", "crewui-demo-no-network")
+    os.environ.setdefault("OPENAI_API_KEY", "crewui-demo-no-network")
 
     agents = []
     tasks = []
@@ -189,9 +198,15 @@ def build_demo_crew() -> Crew:
             role=phase.role,
             goal=f"The {phase.name.lower()} step of a trip-planning pipeline.",
             backstory=f"The {phase.role.lower()} on a small trip-planning crew.",
-            llm="anthropic/claude-sonnet-5",
+            llm="gpt-4o-mini",
             verbose=False,
         )
+        # Display-only relabel: the demo never calls the LLM, so it is built
+        # against a bundled provider (above) but shown as the model a crewui
+        # user would really run. object.__setattr__ because LLM is a pydantic
+        # model; pulling in a native Anthropic provider just to render a title
+        # would force crewai[anthropic] onto a generic UI.
+        object.__setattr__(agent.llm, "model", _DEMO_MODEL)
         agents.append(agent)
         tasks.append(
             Task(
