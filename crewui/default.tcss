@@ -104,6 +104,16 @@ Screen {
     padding: 1 2;
 }
 
+/* The run's final deliverable: a system note that closes the session the way
+   the gate box opens a review - green, centred title, outside the agent turns. */
+.done-box {
+    border: round $success;
+    border-title-align: center;
+    height: auto;
+    margin: 1 0 0 0;
+    padding: 1 2;
+}
+
 /* An echoed operator turn: blue, labelled "you" on the right rail to mirror
    the agent boxes. */
 .you-box {

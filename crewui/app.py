@@ -328,10 +328,11 @@ class CrewAIPipelineTUI(App[None]):
 
     def _on_done(self, result: object) -> None:
         raw = getattr(result, "raw", str(result))
-        self._write_agent("[bold green]Pipeline complete.[/bold green]")
-        # Full result, not truncated: this is the final deliverable and the
-        # RichLog scrolls, so there is no reason to clip it.
-        self._write_agent(raw)
+        # The run finishing is a system event, not the last agent still talking,
+        # so render it as a standalone note (like the review gate) rather than
+        # appending into the final agent's box. This also ends that turn. Body is
+        # the full deliverable, not truncated - the session scrolls.
+        self._mount_note("done-box", "Pipeline Complete", raw)
 
         # Hand the result to the host for persistence; a save failure must not
         # take the UI down, so swallow and surface it in the pipeline log.

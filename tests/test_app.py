@@ -106,6 +106,19 @@ class TestRun:
             assert " Cost:    $0.5000" in block
             assert " Status:  done" in block
 
+    async def test_completion_renders_a_system_done_box(self, make_crew: MakeCrew) -> None:
+        # The run's end is a system note (like the review gate), not the last
+        # agent's box: a standalone done-box holds the final deliverable.
+        result = FakeResult(raw="the final plan")
+        app = CrewAIPipelineTUI(crew=make_crew(result=result))
+        async with app.run_test() as pilot:
+            assert await _wait_for(pilot, lambda: bool(app.query(".done-box")))
+            box = app.query_one(".done-box", Static)
+            assert str(box.border_title) == "Pipeline Complete"
+            assert "the final plan" in str(box.render())
+            # It is not an agent turn box.
+            assert "agent-turn" not in box.classes
+
     async def test_run_without_token_usage_leaves_metrics_untouched(
         self, make_crew: MakeCrew
     ) -> None:
@@ -530,6 +543,16 @@ class TestAgentSession:
             app._apply_turn_usage(0)
             assert app._turn_box is not None
             assert not app._turn_box.border_subtitle
+
+    async def test_usage_with_no_open_turn_box_is_a_noop(self, make_crew: MakeCrew) -> None:
+        app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            # No agent turn is open (e.g. a stray callback after the session
+            # closed one) - there is nothing to stamp, so it must simply return.
+            assert app._turn_box is None
+            app._apply_turn_usage(0)
+            assert app._turn_box is None
 
 
 class TestLogHandler:
