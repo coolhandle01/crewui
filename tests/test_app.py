@@ -664,9 +664,9 @@ class TestToolCalls:
             app._open_agent_turn(0)
             await pilot.pause(0.05)
             app._tool_started_ui("browse", {"q": "programmes"})
-            app._tool_finished_ui("found 10", from_cache=False, ok=True)
-            app._tool_started_ui("hydrate", {"handle": "cloudflare"})
-            app._tool_finished_ui("scope: *.cloudflare.com", from_cache=True, ok=True)
+            app._tool_finished_ui("found 10 programmes", from_cache=False, ok=True)
+            app._tool_started_ui("hydrate", {"handle": "acme"})
+            app._tool_finished_ui("scope: 3 wildcard hosts", from_cache=True, ok=True)
             await pilot.pause(0.05)
             colls = list(app.query(".tool-call").results(Collapsible))
             assert len(colls) == 2
@@ -675,11 +675,13 @@ class TestToolCalls:
                 return " ".join(str(s.render()) for s in coll.query(".tool-out").results(Static))
 
             assert colls[0].title.startswith("> browse")
-            assert "found 10" in body(colls[0])
+            assert "found 10 programmes" in body(colls[0])
             assert "⚡" not in colls[0].title  # first was not cached
             assert colls[1].title.startswith("> hydrate")
             assert "⚡" in colls[1].title  # second was
-            assert "cloudflare.com" in body(colls[1])  # the result did not leak into box 1
+            # The second result landed in the second box, not the first.
+            assert "3 wildcard hosts" in body(colls[1])
+            assert "3 wildcard hosts" not in body(colls[0])
 
     async def test_turn_with_no_tool_calls_renders_text_only(self, make_crew: MakeCrew) -> None:
         app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
