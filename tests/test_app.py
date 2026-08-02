@@ -771,6 +771,97 @@ class TestToolCalls:
             )
 
 
+class TestReasoning:
+    """The agent's extended thinking streams into a collapsed reasoning box at
+    the top of the turn, fed by LLMThinkingChunkEvent - provider-agnostic, so it
+    is exercised on the UI thread with fake events like the tool-call tests.
+    """
+
+    async def test_chunks_accumulate_in_a_collapsed_box(self, make_crew: MakeCrew) -> None:
+        app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
+        async with app.run_test() as pilot:
+            app._open_agent_turn(0)
+            await pilot.pause(0.05)
+            app._thinking_chunk_ui("Let me ")
+            app._thinking_chunk_ui("think it through.")
+            await pilot.pause(0.05)
+            box = app.query_one(".reasoning-box", Collapsible)
+            assert box.collapsed is True
+            assert box.title == "reasoning"
+            # Both chunks land in one box, in order.
+            out = app.query_one(".reasoning-out", Static)
+            assert "Let me think it through." in str(out.render())
+
+    async def test_bus_handler_streams_the_chunk(self, make_crew: MakeCrew) -> None:
+        app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
+        async with app.run_test() as pilot:
+            app._open_agent_turn(0)
+            await pilot.pause(0.05)
+            app._on_thinking_chunk(None, SimpleNamespace(chunk="weighing the options"))
+            await pilot.pause(0.05)
+            assert "weighing the options" in str(app.query_one(".reasoning-out", Static).render())
+
+    async def test_empty_chunk_is_a_noop(self, make_crew: MakeCrew) -> None:
+        app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
+        async with app.run_test() as pilot:
+            app._open_agent_turn(0)
+            await pilot.pause(0.05)
+            app._on_thinking_chunk(None, SimpleNamespace(chunk=""))
+            await pilot.pause(0.05)
+            assert not app.query(".reasoning-box")
+
+    async def test_a_tool_ends_the_thinking_run(self, make_crew: MakeCrew) -> None:
+        # Think, tool, think again -> two reasoning boxes, the tool between them,
+        # not the second thought merged into the first box.
+        app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
+        async with app.run_test() as pilot:
+            app._open_agent_turn(0)
+            await pilot.pause(0.05)
+            app._thinking_chunk_ui("first thought")
+            app._tool_started_ui("recon", "x")
+            app._thinking_chunk_ui("second thought")
+            await pilot.pause(0.05)
+            boxes = list(app.query(".reasoning-box").results(Collapsible))
+            assert len(boxes) == 2
+
+            def body(box: Collapsible) -> str:
+                outs = box.query(".reasoning-out").results(Static)
+                return " ".join(str(s.render()) for s in outs)
+
+            assert "first thought" in body(boxes[0])
+            assert "second thought" in body(boxes[1])
+
+    async def test_thinking_lazily_opens_a_turn(self, make_crew: MakeCrew) -> None:
+        app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            assert app._turn_box is None
+            app._thinking_chunk_ui("thinking with no turn open")
+            await pilot.pause(0.05)
+            assert app._turn_box is not None
+            assert app.query_one(".reasoning-box", Collapsible) is not None
+
+    async def test_thinking_without_a_session_is_a_noop(self, make_crew: MakeCrew) -> None:
+        app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
+        async with app.run_test() as pilot:
+            await app.query_one("#agent-session", VerticalScroll).remove()
+            await pilot.pause(0.05)
+            app._thinking_chunk_ui("nowhere to go")
+            assert not app.query(".reasoning-box")
+
+    async def test_a_run_deregisters_its_thinking_handler(self, make_crew: MakeCrew) -> None:
+        from crewai.events import crewai_event_bus
+        from crewai.events.types.llm_events import LLMThinkingChunkEvent
+
+        app = CrewAIPipelineTUI(crew=make_crew())
+        async with app.run_test() as pilot:
+            assert await _wait_for(
+                pilot,
+                lambda: app._on_thinking_chunk
+                not in crewai_event_bus._sync_handlers.get(LLMThinkingChunkEvent, frozenset()),
+            )
+
+
 class TestLogHandler:
     async def test_agent_prefixed_records_go_to_agent_log(self, make_crew: MakeCrew) -> None:
         app = CrewAIPipelineTUI(crew=make_crew(), record_prefix="myapp", dry_run=True)

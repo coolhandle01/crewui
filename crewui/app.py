@@ -32,6 +32,7 @@ from crewai.events import (
     ToolUsageStartedEvent,
     crewai_event_bus,
 )
+from crewai.events.types.llm_events import LLMThinkingChunkEvent
 from rich.rule import Rule as RichRule
 from rich.text import Text
 from textual import events, work
@@ -142,6 +143,12 @@ class CrewAIPipelineTUI(App[None]):
         # awaiting their Finished event; a finish pops the matching box and fills
         # it (see _tool_started_ui / _tool_finished_ui).
         self._pending_tools: dict[tuple[str, str], list[tuple[Collapsible, Static]]] = {}
+        # The agent's extended thinking, streamed in chunks. _reasoning_body is
+        # the Static the current reasoning box accumulates into (None -> the next
+        # chunk opens a fresh box); it closes when anything else joins the turn
+        # (a tool, the answer, a new turn) so a later thinking run gets its own.
+        self._reasoning_body: Static | None = None
+        self._reasoning_lines: list[str] = []
         # Per-turn token spend: each agent holds a live token accumulator that
         # crewai's LLM callback ticks up as a task runs, cumulative across that
         # agent's turns. We snapshot it (keyed by agent id) at each task
@@ -254,6 +261,9 @@ class CrewAIPipelineTUI(App[None]):
         crewai_event_bus.register_handler(ToolUsageStartedEvent, self._on_tool_started)
         crewai_event_bus.register_handler(ToolUsageFinishedEvent, self._on_tool_finished)
         crewai_event_bus.register_handler(ToolUsageErrorEvent, self._on_tool_error)
+        # Likewise the agent's thinking, streamed as chunks by any provider that
+        # surfaces extended reasoning.
+        crewai_event_bus.register_handler(LLMThinkingChunkEvent, self._on_thinking_chunk)
         try:
             result = self._crew.kickoff()
             self.call_from_thread(self._on_done, result)
@@ -266,6 +276,7 @@ class CrewAIPipelineTUI(App[None]):
             crewai_event_bus.off(ToolUsageStartedEvent, self._on_tool_started)
             crewai_event_bus.off(ToolUsageFinishedEvent, self._on_tool_finished)
             crewai_event_bus.off(ToolUsageErrorEvent, self._on_tool_error)
+            crewai_event_bus.off(LLMThinkingChunkEvent, self._on_thinking_chunk)
 
     def _make_task_callback(
         self, idx: int, orig: Callable[..., None] | None
@@ -417,6 +428,7 @@ class CrewAIPipelineTUI(App[None]):
         so a turn that opens with a tool has no stray blank line above it."""
         self._turn_box = None
         self._turn_text = None
+        self._reasoning_body = None
         try:
             session = self.query_one("#agent-session", VerticalScroll)
         except NoMatches:
@@ -469,6 +481,8 @@ class CrewAIPipelineTUI(App[None]):
             self._open_agent_turn(self._current_task_idx)
         if self._turn_box is None:  # session not mounted - nothing to write into
             return
+        # Prose joining the turn ends any open thinking run.
+        self._reasoning_body = None
         if self._turn_text is None:
             # First prose after a tool box: start a fresh Static below it so the
             # text lands under the tool call, not merged into the run above it.
@@ -549,8 +563,10 @@ class CrewAIPipelineTUI(App[None]):
         )
         self._turn_box.mount(coll)
         self._pending_tools.setdefault(self._tool_key(name, args), []).append((coll, body))
-        # Prose after this tool opens a fresh Static below the box (see _write_agent).
+        # Prose after this tool opens a fresh Static below the box (see _write_agent);
+        # a tool joining the turn also ends any open thinking run.
         self._turn_text = None
+        self._reasoning_body = None
         with contextlib.suppress(NoMatches):
             self.query_one("#agent-session", VerticalScroll).scroll_end(animate=False)
 
@@ -569,6 +585,33 @@ class CrewAIPipelineTUI(App[None]):
         if from_cache:
             marker += " ⚡"
         coll.title = f"{coll.title}{marker}"
+        with contextlib.suppress(NoMatches):
+            self.query_one("#agent-session", VerticalScroll).scroll_end(animate=False)
+
+    def _on_thinking_chunk(self, _source: object, event: object) -> None:
+        """Bus handler (worker thread): a chunk of the agent's thinking."""
+        chunk = str(getattr(event, "chunk", ""))
+        if chunk:
+            self._on_ui(self._thinking_chunk_ui, chunk)
+
+    def _thinking_chunk_ui(self, chunk: str) -> None:
+        """Stream a thinking chunk into the turn's reasoning box, opening a
+        collapsed one on the first chunk. Folded away by default - reasoning is
+        long and secondary; expand it to read how the agent got there."""
+        if self._turn_box is None:
+            self._open_agent_turn(self._current_task_idx)
+        if self._turn_box is None:  # session not mounted - nothing to mount into
+            return
+        body = self._reasoning_body
+        if body is None:
+            body = Static("", classes="reasoning-out", markup=False)
+            self._reasoning_lines = []
+            self._turn_box.mount(
+                Collapsible(body, title="reasoning", collapsed=True, classes="reasoning-box")
+            )
+            self._reasoning_body = body
+        self._reasoning_lines.append(chunk)
+        body.update("".join(self._reasoning_lines))
         with contextlib.suppress(NoMatches):
             self.query_one("#agent-session", VerticalScroll).scroll_end(animate=False)
 

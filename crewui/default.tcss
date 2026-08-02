@@ -118,6 +118,21 @@ Screen {
     color: $text-muted;
 }
 
+/* The agent's extended thinking, streamed in as it reasons - collapsed by
+   default (long and secondary), dim and italic so it sits behind the prose.
+   Expand it to read how the agent got to its answer. */
+.reasoning-box {
+    height: auto;
+    color: $text-muted;
+    text-style: italic;
+    margin: 0;
+}
+
+.reasoning-out {
+    height: auto;
+    color: $text-muted;
+}
+
 /* The human-review prompt - unmissable, centred title. */
 .gate-box {
     border: round $warning;

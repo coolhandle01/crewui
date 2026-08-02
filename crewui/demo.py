@@ -41,6 +41,7 @@ from crewai.events import (
     ToolUsageStartedEvent,
     crewai_event_bus,
 )
+from crewai.events.types.llm_events import LLMThinkingChunkEvent
 
 from crewui.app import CrewAIPipelineTUI
 
@@ -154,6 +155,19 @@ def _scripted_kickoff(crew: Crew) -> _Result:
     """
     agg_in = agg_out = agg_cached = 0
     for task, phase in zip(crew.tasks, _PHASES, strict=True):
+        # Thinking first: stream the phase's thought as reasoning chunks, exactly
+        # as a thinking model's provider does, so the demo drives the real
+        # collapsed-reasoning path. Split so the box visibly accumulates.
+        words = phase.thought.split()
+        half = len(words) // 2 or 1
+        call_id = f"demo-{phase.tool}"
+        crewai_event_bus.emit(
+            crew, LLMThinkingChunkEvent(chunk=" ".join(words[:half]) + " ", call_id=call_id)
+        )
+        time.sleep(0.2)
+        crewai_event_bus.emit(
+            crew, LLMThinkingChunkEvent(chunk=" ".join(words[half:]), call_id=call_id)
+        )
         started = datetime.now()
         crewai_event_bus.emit(
             crew, ToolUsageStartedEvent(tool_name=phase.tool, tool_args=phase.tool_input)
