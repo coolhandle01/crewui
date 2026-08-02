@@ -64,14 +64,17 @@ Screen {
     width: 1fr;
 }
 
+/* The panes own the horizontal inset so every child - title, scroll, input -
+   shares one left/right rhythm, and the two scrollables' bars land in the same
+   column (a child's own margin would shrink its siblings and skew that). */
 #messages-pane {
     height: 60%;
     border-bottom: solid $surface;
     layout: vertical;
+    padding: 0 1;
 }
 
 .pane-title {
-    padding: 0 1;
     color: $accent;
     text-style: bold;
     height: 1;
@@ -79,8 +82,8 @@ Screen {
 
 #agent-session {
     height: 1fr;
-    padding: 0 1;
     overflow-y: auto;
+    scrollbar-gutter: stable;
 }
 
 /* One container per agent turn: role and model on the top rail, per-turn token
@@ -145,8 +148,8 @@ Screen {
 /* The input box is a plain editor, not a decorated turn - the sent message
    (.you-box) carries the "you" identity once submitted. */
 #human-input {
-    margin: 0 1 1 1;
     height: 5;
+    margin-bottom: 1;
 }
 
 #human-input:disabled {
@@ -156,10 +159,10 @@ Screen {
 #logs-pane {
     height: 40%;
     layout: vertical;
+    padding: 0 1;
 }
 
 #logs-title {
-    padding: 0 1;
     color: $text-muted;
     text-style: bold;
     height: 1;
@@ -167,5 +170,5 @@ Screen {
 
 #crew-log {
     height: 1fr;
-    padding: 0 1;
+    scrollbar-gutter: stable;
 }

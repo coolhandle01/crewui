@@ -51,6 +51,24 @@ async def _wait_for(pilot: object, predicate: Callable[[], bool], ticks: int = 6
     return predicate()
 
 
+class TestLayout:
+    async def test_scroll_panes_and_input_share_one_right_edge(
+        self, make_crew: MakeCrew
+    ) -> None:
+        # The two scroll panes and the input box must end in the same column so
+        # their scrollbars line up. A child's own horizontal margin used to
+        # shrink its sibling and skew this; the panes now own the inset instead.
+        app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause(0.05)
+            edges = {
+                app.query_one("#agent-session").region.right,
+                app.query_one("#crew-log").region.right,
+                app.query_one("#human-input").region.right,
+            }
+            assert len(edges) == 1
+
+
 class TestCompose:
     async def test_sidebar_lists_one_row_per_task(self, make_crew: MakeCrew) -> None:
         app = CrewAIPipelineTUI(crew=make_crew(), pipeline_name="My Pipeline", dry_run=True)
