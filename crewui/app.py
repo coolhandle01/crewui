@@ -155,6 +155,11 @@ class CrewAIPipelineTUI(App[None]):
         # boundary; a turn's own spend is the running total now minus its total
         # at the agent's previous turn.
         self._usage_snapshots: dict[int, tuple[int, int, int]] = {}
+        # Running totals for the sidebar metrics, summed from each turn's spend so
+        # the panel updates live rather than only at completion.
+        self._run_input = 0
+        self._run_output = 0
+        self._run_cached = 0
         # Human-review bridge: the worker thread parks on this event while the
         # operator types feedback into the input box on the UI thread.
         self._feedback_event: threading.Event | None = None
@@ -189,14 +194,20 @@ class CrewAIPipelineTUI(App[None]):
                 with Vertical(id="messages-pane"):
                     yield Label("Agent Session", classes="pane-title")
                     yield VerticalScroll(id="agent-session")
-                    yield FeedbackArea(
-                        "",
-                        id="human-input",
-                        soft_wrap=True,
-                        show_line_numbers=False,
-                        disabled=True,
-                        placeholder="Human review (idle)",
-                    )
+                    # Wrap the input so a derived theme can inset the box via a
+                    # margin on #human-input: a margin on the bare input shrinks
+                    # the whole pane (Textual reserves a child's margin from the
+                    # pane's content width), which drags the scrollbar out of
+                    # alignment. Inside a full-width wrapper the margin is local.
+                    with Vertical(id="input-wrap"):
+                        yield FeedbackArea(
+                            "",
+                            id="human-input",
+                            soft_wrap=True,
+                            show_line_numbers=False,
+                            disabled=True,
+                            placeholder="Human review (idle)",
+                        )
                 with Vertical(id="logs-pane"):
                     yield Label("Pipeline Logs", id="logs-title", classes="pane-title")
                     yield RichLog(id="crew-log", highlight=True, markup=True)
@@ -227,6 +238,9 @@ class CrewAIPipelineTUI(App[None]):
                 )
             )
         else:
+            # Populate the sidebar zeroed + running from the off, so the panel
+            # reads as live from the first frame rather than blank until the end.
+            self._render_run_metrics(status="running")
             self._start_run()
 
     def on_unmount(self) -> None:
@@ -331,6 +345,29 @@ class CrewAIPipelineTUI(App[None]):
             getattr(summary, "cached_prompt_tokens", 0),
         ), id(agent)
 
+    def _render_run_metrics(self, status: str) -> None:
+        """Refresh the sidebar metrics from the running totals.
+
+        Used for the live states (zeroed at start, growing per turn); the final
+        state is rendered separately in ``_on_done`` from the crew's own
+        authoritative ``token_usage``. A no-op if the widget is not mounted."""
+        cost = (
+            self._get_token_cost(self._run_input, self._run_output) if self._get_token_cost else 0.0
+        )
+        try:
+            self.query_one("#metrics", Static).update(
+                format_metrics_block(
+                    input_tokens=self._run_input,
+                    output_tokens=self._run_output,
+                    cached_tokens=self._run_cached,
+                    total_tokens=self._run_input + self._run_output,
+                    estimated_cost_usd=cost,
+                    status=status,
+                )
+            )
+        except NoMatches:
+            logger.debug("metrics widget not mounted")
+
     def _apply_turn_usage(self, idx: int) -> None:
         """Stamp task ``idx``'s turn box with *this* turn's real token spend.
 
@@ -353,6 +390,13 @@ class CrewAIPipelineTUI(App[None]):
         prev = self._usage_snapshots.get(key, (0, 0, 0))
         self._usage_snapshots[key] = now
         inp, out, cached = (now[0] - prev[0], now[1] - prev[1], now[2] - prev[2])
+        # Fold this turn's spend into the running totals and refresh the sidebar,
+        # so the panel tracks the run live. Clamp negatives (a snapshot should
+        # only ever grow) so a stray reset cannot walk a total backwards.
+        self._run_input += max(inp, 0)
+        self._run_output += max(out, 0)
+        self._run_cached += max(cached, 0)
+        self._render_run_metrics(status="running")
         if inp <= 0 and out <= 0:
             # Nothing was recorded for this turn (e.g. a step with no LLM call);
             # leave the subtitle blank rather than show a zero rail.
@@ -415,6 +459,10 @@ class CrewAIPipelineTUI(App[None]):
 
         usage = getattr(result, "token_usage", None)
         if usage is None:
+            # No authoritative totals from the crew: keep the running totals we
+            # accumulated per turn, but mark the run done rather than leave the
+            # sidebar stuck on "running".
+            self._render_run_metrics(status="done")
             return
 
         input_tokens = getattr(usage, "prompt_tokens", 0)

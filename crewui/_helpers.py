@@ -86,9 +86,9 @@ def format_metrics_block(
     than a single opaque count.
     """
     return (
-        f" Input:   {input_tokens:,}\n"
-        f" Output:  {output_tokens:,}\n"
-        f" Cached:  {cached_tokens:,}\n"
+        f" ↑ {input_tokens:,}\n"
+        f" ↓ {output_tokens:,}\n"
+        f" ↻ {cached_tokens:,}\n"
         f" Total:   {total_tokens:,}\n"
         f" Cost:    ${estimated_cost_usd:.4f}\n"
         f" Status:  {status}"

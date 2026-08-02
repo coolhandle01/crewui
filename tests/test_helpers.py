@@ -118,9 +118,11 @@ class TestFormatMetricsBlock:
             total_tokens=12345,
             estimated_cost_usd=0.0418,
         )
-        assert " Input:   9,000" in block
-        assert " Output:  3,345" in block
-        assert " Cached:  512" in block
+        # Input / output / cached carry arrows (up / down / recycle); total,
+        # cost and status keep their labels.
+        assert " ↑ 9,000" in block
+        assert " ↓ 3,345" in block
+        assert " ↻ 512" in block
         assert " Total:   12,345" in block
         assert " Cost:    $0.0418" in block
         assert " Status:  done" in block

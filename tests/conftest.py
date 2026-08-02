@@ -63,14 +63,20 @@ class FakeCrew:
         result: object | None = None,
         steps: list[object] | None = None,
         raise_on_kickoff: bool = False,
+        block_until: object | None = None,
     ) -> None:
         self.tasks = tasks
         self.step_callback: Callable[[object], None] | None = None
         self._result = result if result is not None else FakeResult()
         self._steps = steps or []
         self._raise = raise_on_kickoff
+        # A threading.Event kickoff parks on before doing any work, so a test can
+        # observe the mid-run UI (e.g. the zeroed live metrics) before releasing.
+        self._block_until = block_until
 
     def kickoff(self) -> object:
+        if self._block_until is not None:
+            self._block_until.wait(timeout=5)
         for step in self._steps:
             if self.step_callback is not None:
                 self.step_callback(step)
@@ -91,6 +97,7 @@ def make_crew() -> Callable[..., FakeCrew]:
         result: object | None = None,
         steps: list[object] | None = None,
         raise_on_kickoff: bool = False,
+        block_until: object | None = None,
     ) -> FakeCrew:
         if tasks is None:
             tasks = [
@@ -99,7 +106,11 @@ def make_crew() -> Callable[..., FakeCrew]:
                 FakeTask("Report", "scribe"),
             ]
         return FakeCrew(
-            tasks=tasks, result=result, steps=steps, raise_on_kickoff=raise_on_kickoff
+            tasks=tasks,
+            result=result,
+            steps=steps,
+            raise_on_kickoff=raise_on_kickoff,
+            block_until=block_until,
         )
 
     return _make

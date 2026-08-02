@@ -160,6 +160,12 @@ Screen {
     padding: 0 1;
 }
 
+/* Full-width wrapper around the input so a derived theme can inset the box via
+   a margin on #human-input without shrinking the pane (see the compose note). */
+#input-wrap {
+    height: auto;
+}
+
 /* The input box is a plain editor, not a decorated turn - the sent message
    (.you-box) carries the "you" identity once submitted. */
 #human-input {

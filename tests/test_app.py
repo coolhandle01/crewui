@@ -105,6 +105,58 @@ class TestDryRun:
             assert _statuses(app) == ["Waiting", "Waiting", "Waiting"]
 
 
+class TestLiveMetrics:
+    """The sidebar metrics populate from the start of a live run - zeroed, with
+    the token rows carried by arrows (up / down / recycle) - and accumulate as
+    each turn's spend lands, rather than staying blank until completion."""
+
+    async def test_live_run_shows_zeroed_running_metrics_before_completion(
+        self, make_crew: MakeCrew
+    ) -> None:
+        import threading
+
+        release = threading.Event()
+        crew = make_crew(block_until=release)
+        app = CrewAIPipelineTUI(crew=crew)  # not dry_run: a real kickoff
+        try:
+            async with app.run_test() as pilot:
+                # kickoff is parked, so the run has started but no turn has
+                # finished: the metrics must already read zeros + running.
+                await pilot.pause(0.1)
+                block = _metrics(app)
+                assert " ↑ 0" in block
+                assert " ↓ 0" in block
+                assert " ↻ 0" in block
+                assert " Status:  running" in block
+        finally:
+            release.set()
+
+    async def test_turn_usage_accumulates_into_the_sidebar_live(self, make_crew: MakeCrew) -> None:
+        crew = make_crew()
+        app = CrewAIPipelineTUI(crew=crew, dry_run=True, get_token_cost=lambda i, o: 0.0)
+        async with app.run_test() as pilot:
+            app._open_agent_turn(0)
+            await pilot.pause(0.05)
+            proc = crew.tasks[0].agent._token_process
+            proc.sum_prompt_tokens(1000)
+            proc.sum_completion_tokens(200)
+            app._apply_turn_usage(0)
+            # The first turn's spend shows in the sidebar immediately (running).
+            block = _metrics(app)
+            assert " ↑ 1,000" in block
+            assert " ↓ 200" in block
+            assert " Status:  running" in block
+            # A second agent's turn adds to the running total, not replaces it.
+            app._open_agent_turn(1)
+            proc2 = crew.tasks[1].agent._token_process
+            proc2.sum_prompt_tokens(500)
+            proc2.sum_completion_tokens(50)
+            app._apply_turn_usage(1)
+            block = _metrics(app)
+            assert " ↑ 1,500" in block
+            assert " ↓ 250" in block
+
+
 class TestRun:
     async def test_successful_run_marks_all_tasks_done(self, make_crew: MakeCrew) -> None:
         app = CrewAIPipelineTUI(crew=make_crew(), get_token_cost=lambda i, o: 0.5)
@@ -116,8 +168,8 @@ class TestRun:
             assert await _wait_for(pilot, lambda: " Total:   140" in _metrics(app))
             assert _statuses(app) == ["Done", "Done", "Done"]
             block = _metrics(app)
-            assert " Input:   100" in block
-            assert " Output:  40" in block
+            assert " ↑ 100" in block
+            assert " ↓ 40" in block
             assert " Total:   140" in block
             assert " Cost:    $0.5000" in block
             assert " Status:  done" in block
@@ -135,15 +187,17 @@ class TestRun:
             assert "the final plan" not in str(rule.render())
             assert not app.query(".done-box")
 
-    async def test_run_without_token_usage_leaves_metrics_untouched(
+    async def test_run_without_token_usage_falls_back_to_running_totals_done(
         self, make_crew: MakeCrew
     ) -> None:
         result = FakeResult(raw="no usage here", token_usage=None)
         app = CrewAIPipelineTUI(crew=make_crew(result=result))
         async with app.run_test() as pilot:
-            await _wait_for(pilot, lambda: _statuses(app) == ["Done", "Done", "Done"])
-            # No usage -> _on_done returns before touching the metrics widget.
-            assert _metrics(app) == ""
+            # No authoritative crew usage: the sidebar keeps the running totals
+            # (zero for the fake crew) but the run is marked done, not left
+            # blank or stuck on "running".
+            assert await _wait_for(pilot, lambda: " Status:  done" in _metrics(app))
+            assert " ↑ 0" in _metrics(app)
 
     async def test_total_tokens_falls_back_to_prompt_plus_completion(
         self, make_crew: MakeCrew
