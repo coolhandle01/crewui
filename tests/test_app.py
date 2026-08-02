@@ -686,7 +686,7 @@ class TestToolCalls:
             app._tool_started_ui("hydrate", {"handle": "linkedin"})
             # Finish out of start order to prove matching, not positional luck.
             app._tool_finished_ui(
-                "hydrate", {"handle": "linkedin"}, "scope: linkedin.com", from_cache=True, ok=True
+                "hydrate", {"handle": "linkedin"}, "scope: 2 web urls", from_cache=True, ok=True
             )
             app._tool_finished_ui(
                 "hydrate", {"handle": "cloudflare"}, "scope: 50 assets", from_cache=False, ok=True
@@ -706,7 +706,7 @@ class TestToolCalls:
             assert "running" not in body(colls[0])
             assert "⚡" not in colls[0].title
             assert colls[1].title.startswith("> hydrate(handle=linkedin)")
-            assert "linkedin.com" in body(colls[1])
+            assert "2 web urls" in body(colls[1])
             assert "⚡" in colls[1].title  # linkedin came from cache
 
     async def test_turn_with_no_tool_calls_renders_text_only(self, make_crew: MakeCrew) -> None:
