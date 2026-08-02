@@ -33,6 +33,7 @@ from crewai.events import (
     crewai_event_bus,
 )
 from crewai.events.types.llm_events import LLMThinkingChunkEvent
+from rich.errors import MarkupError
 from rich.rule import Rule as RichRule
 from rich.text import Text
 from textual import events, work
@@ -570,7 +571,16 @@ class CrewAIPipelineTUI(App[None]):
             self._turn_text = Static("", classes="agent-text")
             self._turn_box.mount(self._turn_text)
         self._turn_lines.append(msg)
-        self._turn_text.update(Text.from_markup("\n\n".join(self._turn_lines)))
+        joined = "\n\n".join(self._turn_lines)
+        # Defence in depth: the buffer accumulates and re-parses every write, so
+        # one message with stray markup (an unescaped "[/path]") would otherwise
+        # raise here and poison every later write in the turn. Fall back to plain
+        # text if the markup does not parse, keeping the turn readable.
+        try:
+            rendered: Text = Text.from_markup(joined)
+        except MarkupError:
+            rendered = Text(joined)
+        self._turn_text.update(rendered)
         with contextlib.suppress(NoMatches):
             self.query_one("#agent-session", VerticalScroll).scroll_end(animate=False)
 

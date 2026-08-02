@@ -14,6 +14,7 @@ import json
 from typing import Any
 
 from crewai.agents.parser import AgentAction, AgentFinish
+from rich.markup import escape
 
 
 def truncate(text: str, limit: int) -> str:
@@ -116,16 +117,21 @@ def format_step_message(step: object) -> str:
     crewai parser types - the caller's callback is responsible for swallowing
     any unexpected exceptions, since the step-callback contract is
     fire-and-forget telemetry.
+
+    Every interpolated payload is ``rich.markup.escape``-d: agent output is
+    arbitrary text (a bracketed POSIX path like ``[/etc/hosts]`` reads as a
+    stray closing tag and would raise ``MarkupError``), so only this function's
+    own style tags stay live markup - the agent's content renders literally.
     """
     if isinstance(step, AgentAction):
-        tool_call = f"[cyan]> {step.tool}[/cyan]({truncate(step.tool_input, 120)})"
-        msg = f"[yellow]Thought:[/yellow] {step.thought}\n{tool_call}"
+        tool_call = f"[cyan]> {escape(step.tool)}[/cyan]({escape(truncate(step.tool_input, 120))})"
+        msg = f"[yellow]Thought:[/yellow] {escape(step.thought)}\n{tool_call}"
         if step.result:
-            msg += f"\n[dim]{truncate(step.result, 300)}[/dim]"
+            msg += f"\n[dim]{escape(truncate(step.result, 300))}[/dim]"
         return msg
     if isinstance(step, AgentFinish):
-        return f"[bold green]Answer:[/bold green] {step.output}"
-    return truncate(str(step), 300)
+        return f"[bold green]Answer:[/bold green] {escape(step.output)}"
+    return escape(truncate(str(step), 300))
 
 
 def format_tool_title(tool_name: str, tool_args: object) -> str:

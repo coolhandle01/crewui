@@ -16,6 +16,7 @@ from types import SimpleNamespace
 from typing import cast
 
 import psutil
+from rich.text import Text
 from textual.containers import Vertical, VerticalScroll
 from textual.widgets import Collapsible, Label, RichLog, Static
 
@@ -454,6 +455,25 @@ class TestAgentSession:
         # rather than crash the session.
         app = CrewAIPipelineTUI(crew=make_crew())
         assert app._agent_label(99) == "Agent"
+
+    async def test_write_agent_survives_unbalanced_markup_and_keeps_the_turn(
+        self, make_crew: MakeCrew
+    ) -> None:
+        # Defence in depth: even a caller that hands _write_agent unescaped
+        # markup (a stray "[/etc/hosts]") must not raise - and, because the turn
+        # buffer accumulates and re-parses, must not poison later writes in the
+        # same turn. The turn stays usable and both messages are readable.
+        app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
+        async with app.run_test() as pilot:
+            app._open_agent_turn(0)
+            await pilot.pause(0.05)
+            app._write_agent("danger [/etc/hosts]")  # must not raise
+            app._write_agent("still working")  # must not raise, not poisoned
+            assert app._turn_text is not None
+            rendered = app._turn_text.render()
+            plain = rendered.plain if isinstance(rendered, Text) else str(rendered)
+            assert "/etc/hosts" in plain
+            assert "still working" in plain
 
     async def test_agent_turn_box_is_titled_with_role(self, make_crew: MakeCrew) -> None:
         app = CrewAIPipelineTUI(crew=make_crew())

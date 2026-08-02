@@ -11,6 +11,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from crewai.agents.parser import AgentAction, AgentFinish
+from rich.text import Text
 
 from crewui._helpers import (
     dispatch_on_ui_thread,
@@ -182,6 +183,38 @@ class TestFormatStepMessage:
         msg = format_step_message("random output " + "z" * 500)
         assert msg.startswith("random output ")
         assert len(msg) == 300
+
+    # Agent output is arbitrary text - a pentest agent routinely emits bracketed
+    # POSIX paths ("[/etc/hosts]") that read as stray Rich markup tags. The
+    # formatted message must stay parseable markup so the session pane can render
+    # it, with the agent's own content shown literally rather than interpreted.
+    def test_bracketed_answer_stays_parseable_markup(self) -> None:
+        finish = AgentFinish(thought="done", output="see file [/etc/hosts]", text="t")
+        rendered = Text.from_markup(format_step_message(finish))  # must not raise
+        assert "/etc/hosts" in rendered.plain
+
+    def test_bracketed_action_payloads_stay_parseable(self) -> None:
+        action = _make_action(
+            tool="scan",
+            tool_input="path=[/tmp/x]",
+            thought="open [/root]?",
+            result="wrote [/etc/passwd]",
+        )
+        rendered = Text.from_markup(format_step_message(action))  # must not raise
+        assert "[/tmp/x]" in rendered.plain
+        assert "[/etc/passwd]" in rendered.plain
+        assert "[/root]" in rendered.plain
+
+    def test_style_shaped_payload_renders_literally_not_as_style(self) -> None:
+        # Balanced tags in agent output must show as text, not be consumed as
+        # styling (which would also let output forge UI chrome into the pane).
+        finish = AgentFinish(thought="d", output="danger [red]text[/red]", text="t")
+        rendered = Text.from_markup(format_step_message(finish))
+        assert "[red]text[/red]" in rendered.plain
+
+    def test_other_step_type_escapes_brackets(self) -> None:
+        rendered = Text.from_markup(format_step_message("boom [/etc/hosts]"))  # must not raise
+        assert "[/etc/hosts]" in rendered.plain
 
 
 class TestFormatToolTitle:
