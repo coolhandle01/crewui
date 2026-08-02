@@ -25,7 +25,7 @@ from crewui.app import (
     _make_tui_human_input_provider,
     _TUILogHandler,
 )
-from tests.conftest import FakeCrew, FakeResult
+from tests.conftest import FakeCrew, FakeResult, FakeTask
 
 MakeCrew = Callable[..., FakeCrew]
 
@@ -52,9 +52,7 @@ async def _wait_for(pilot: object, predicate: Callable[[], bool], ticks: int = 6
 
 
 class TestLayout:
-    async def test_scroll_panes_and_input_share_one_right_edge(
-        self, make_crew: MakeCrew
-    ) -> None:
+    async def test_scroll_panes_and_input_share_one_right_edge(self, make_crew: MakeCrew) -> None:
         # The two scroll panes and the input box must end in the same column so
         # their scrollbars line up. A child's own horizontal margin used to
         # shrink its sibling and skew this; the panes now own the inset instead.
@@ -124,9 +122,7 @@ class TestRun:
             assert " Cost:    $0.5000" in block
             assert " Status:  done" in block
 
-    async def test_completion_renders_a_labelled_rule_not_a_box(
-        self, make_crew: MakeCrew
-    ) -> None:
+    async def test_completion_renders_a_labelled_rule_not_a_box(self, make_crew: MakeCrew) -> None:
         # The run's end is a marker, not content: a centred labelled rule, with
         # the deliverable staying in the last agent turn (not repeated here).
         result = FakeResult(raw="the final plan")
@@ -134,7 +130,7 @@ class TestRun:
         async with app.run_test() as pilot:
             assert await _wait_for(pilot, lambda: bool(app.query(".finish-rule")))
             rule = app.query_one(".finish-rule", Static)
-            assert "pipeline complete" in str(rule.render())
+            assert "Pipeline Complete" in str(rule.render())
             # The rule carries no box and does not repeat the deliverable.
             assert "the final plan" not in str(rule.render())
             assert not app.query(".done-box")
@@ -193,6 +189,7 @@ class TestErrorPath:
     async def test_kickoff_exception_is_reported_not_raised(self, make_crew: MakeCrew) -> None:
         app = CrewAIPipelineTUI(crew=make_crew(raise_on_kickoff=True))
         async with app.run_test() as pilot:
+
             def logged() -> bool:
                 return any(
                     "Pipeline error" in str(box.render())
@@ -212,9 +209,7 @@ class TestHumanReview:
     operator actually gets back is asserted, not just that nothing raised.
     """
 
-    async def test_feedback_gate_opens_and_submit_returns_value(
-        self, make_crew: MakeCrew
-    ) -> None:
+    async def test_feedback_gate_opens_and_submit_returns_value(self, make_crew: MakeCrew) -> None:
         app = CrewAIPipelineTUI(crew=make_crew())
         async with app.run_test() as pilot:
             captured: list[str] = []
@@ -255,9 +250,7 @@ class TestHumanReview:
             assert captured == [""]
             assert inp.disabled
 
-    async def test_ctrl_j_inserts_newline_and_full_value_submits(
-        self, make_crew: MakeCrew
-    ) -> None:
+    async def test_ctrl_j_inserts_newline_and_full_value_submits(self, make_crew: MakeCrew) -> None:
         app = CrewAIPipelineTUI(crew=make_crew())
         async with app.run_test() as pilot:
             captured: list[str] = []
@@ -401,9 +394,7 @@ class TestAgentSession:
     'you' box echoing each submitted feedback round.
     """
 
-    def test_agent_label_falls_back_when_task_index_out_of_range(
-        self, make_crew: MakeCrew
-    ) -> None:
+    def test_agent_label_falls_back_when_task_index_out_of_range(self, make_crew: MakeCrew) -> None:
         # A box opened for a task that is not introspectable (index past the end,
         # or an agent that raises on access) must still get a generic title
         # rather than crash the session.
@@ -504,9 +495,7 @@ class TestAgentSession:
             # A cached turn appends a recycle rail; an uncached one does not.
             assert app._turn_box.border_subtitle == "↑1.6k · ↓430 · ↻896"
 
-    async def test_second_turn_same_agent_shows_only_the_delta(
-        self, make_crew: MakeCrew
-    ) -> None:
+    async def test_second_turn_same_agent_shows_only_the_delta(self, make_crew: MakeCrew) -> None:
         # The accumulator is cumulative across an agent's turns, so a per-agent
         # diff must show the turn's own spend, not the running total.
         crew = make_crew()
@@ -541,9 +530,7 @@ class TestAgentSession:
             assert app._turn_box is not None
             assert not app._turn_box.border_subtitle
 
-    async def test_out_of_range_task_index_leaves_subtitle_blank(
-        self, make_crew: MakeCrew
-    ) -> None:
+    async def test_out_of_range_task_index_leaves_subtitle_blank(self, make_crew: MakeCrew) -> None:
         app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
         async with app.run_test() as pilot:
             app._open_agent_turn(0)
@@ -576,6 +563,74 @@ class TestAgentSession:
             assert app._turn_box is None
             app._apply_turn_usage(0)
             assert app._turn_box is None
+
+    async def test_native_provider_usage_read_off_the_llm_instance(
+        self, make_crew: MakeCrew
+    ) -> None:
+        # A native provider (crewai's Anthropic / Bedrock) ticks the *LLM
+        # instance*, not the agent's _token_process, so the subtitle must read
+        # the instance's get_token_usage_summary() when the process stays zero.
+        crew = make_crew()
+        agent = crew.tasks[0].agent
+        agent.llm = SimpleNamespace(
+            get_token_usage_summary=lambda: SimpleNamespace(
+                prompt_tokens=1180, completion_tokens=260, cached_prompt_tokens=0
+            )
+        )
+        app = CrewAIPipelineTUI(crew=crew, dry_run=True)
+        async with app.run_test() as pilot:
+            app._open_agent_turn(0)
+            await pilot.pause(0.05)
+            app._apply_turn_usage(0)
+            assert app._turn_box is not None
+            assert app._turn_box.border_subtitle == "↑1.2k · ↓260"
+
+    async def test_shared_llm_instance_shows_per_turn_delta(self, make_crew: MakeCrew) -> None:
+        # One LLM instance is shared across agents on the native path, and its
+        # counters are cumulative, so keying the diff by the instance must show
+        # each turn's own spend even as different agents run.
+        totals = SimpleNamespace(prompt_tokens=0, completion_tokens=0, cached_prompt_tokens=0)
+        shared_llm = SimpleNamespace(get_token_usage_summary=lambda: totals)
+        crew = make_crew(tasks=[FakeTask("Recon", "scout"), FakeTask("Report", "scribe")])
+        for task in crew.tasks:
+            task.agent.llm = shared_llm
+        app = CrewAIPipelineTUI(crew=crew, dry_run=True)
+        async with app.run_test() as pilot:
+            app._open_agent_turn(0)
+            await pilot.pause(0.05)
+            totals.prompt_tokens, totals.completion_tokens = 1000, 200
+            app._apply_turn_usage(0)
+            assert app._turn_box is not None
+            assert app._turn_box.border_subtitle == "↑1.0k · ↓200"
+            # Second agent, same instance: cumulative grows to 1500 / 300.
+            app._open_agent_turn(1)
+            totals.prompt_tokens, totals.completion_tokens = 1500, 300
+            app._apply_turn_usage(1)
+            assert app._turn_box is not None
+            assert app._turn_box.border_subtitle == "↑500 · ↓100"
+
+    async def test_zeroed_llm_instance_falls_back_to_the_token_process(
+        self, make_crew: MakeCrew
+    ) -> None:
+        # If the LLM instance has recorded nothing (e.g. the scripted demo, or a
+        # litellm path that ticks only the process), the subtitle must fall back
+        # to the agent's _token_process rather than blank out.
+        crew = make_crew()
+        agent = crew.tasks[0].agent
+        agent.llm = SimpleNamespace(
+            get_token_usage_summary=lambda: SimpleNamespace(
+                prompt_tokens=0, completion_tokens=0, cached_prompt_tokens=0
+            )
+        )
+        agent._token_process.sum_prompt_tokens(800)
+        agent._token_process.sum_completion_tokens(150)
+        app = CrewAIPipelineTUI(crew=crew, dry_run=True)
+        async with app.run_test() as pilot:
+            app._open_agent_turn(0)
+            await pilot.pause(0.05)
+            app._apply_turn_usage(0)
+            assert app._turn_box is not None
+            assert app._turn_box.border_subtitle == "↑800 · ↓150"
 
 
 class TestToolCalls:
@@ -631,9 +686,7 @@ class TestToolCalls:
             assert "✗" in coll.title
             assert "boom" in str(app.query_one(".tool-out", Static).render())
 
-    async def test_started_lazily_opens_a_turn_when_none_is_open(
-        self, make_crew: MakeCrew
-    ) -> None:
+    async def test_started_lazily_opens_a_turn_when_none_is_open(self, make_crew: MakeCrew) -> None:
         app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
         async with app.run_test() as pilot:
             await pilot.pause(0.05)
@@ -654,9 +707,7 @@ class TestToolCalls:
             app._tool_started_ui("recon", "x")
             assert not app.query(".tool-call")
 
-    async def test_bus_handlers_extract_event_fields_and_render(
-        self, make_crew: MakeCrew
-    ) -> None:
+    async def test_bus_handlers_extract_event_fields_and_render(self, make_crew: MakeCrew) -> None:
         app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
         async with app.run_test() as pilot:
             app._open_agent_turn(0)
@@ -689,9 +740,7 @@ class TestToolCalls:
             await pilot.pause(0.05)
             assert not app.query(".tool-call")
 
-    async def test_parallel_tool_calls_each_fill_their_own_box(
-        self, make_crew: MakeCrew
-    ) -> None:
+    async def test_parallel_tool_calls_each_fill_their_own_box(self, make_crew: MakeCrew) -> None:
         # The bug this fixes: agents fire tools in parallel and the event bus
         # dispatches concurrently, so both Starts can land before either Finish.
         # Drive that interleaving (start A, start B, finish A, finish B) and
@@ -766,8 +815,10 @@ class TestToolCalls:
         async with app.run_test() as pilot:
             assert await _wait_for(
                 pilot,
-                lambda: app._on_tool_started
-                not in crewai_event_bus._sync_handlers.get(ToolUsageStartedEvent, frozenset()),
+                lambda: (
+                    app._on_tool_started
+                    not in crewai_event_bus._sync_handlers.get(ToolUsageStartedEvent, frozenset())
+                ),
             )
 
 
@@ -857,8 +908,10 @@ class TestReasoning:
         async with app.run_test() as pilot:
             assert await _wait_for(
                 pilot,
-                lambda: app._on_thinking_chunk
-                not in crewai_event_bus._sync_handlers.get(LLMThinkingChunkEvent, frozenset()),
+                lambda: (
+                    app._on_thinking_chunk
+                    not in crewai_event_bus._sync_handlers.get(LLMThinkingChunkEvent, frozenset())
+                ),
             )
 
 

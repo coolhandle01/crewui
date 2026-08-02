@@ -293,33 +293,65 @@ class CrewAIPipelineTUI(App[None]):
 
         return _cb
 
+    @staticmethod
+    def _agent_usage_snapshot(agent: object) -> tuple[tuple[int, int, int], int] | None:
+        """Cumulative ``(prompt, completion, cached)`` tokens for ``agent``, plus
+        the identity to diff that snapshot against - or ``None`` when the agent
+        exposes no usage at all.
+
+        Two accumulators can carry the spend, and which one is live depends on
+        the LLM path. A native provider (crewai's Anthropic / Bedrock providers)
+        ticks the *LLM instance* (``llm.get_token_usage_summary()``) and leaves
+        the agent's ``_token_process`` at zero, because it never runs the token
+        callback. The litellm path ticks both; a scripted demo may tick only
+        ``_token_process``. So prefer the LLM instance once it has recorded
+        anything, and fall back to ``_token_process`` otherwise.
+
+        The returned key is the *source's* identity: an LLM instance is often
+        shared across agents, so keying the diff by the instance (not the agent)
+        keeps a shared instance's per-turn deltas correct."""
+        llm = getattr(agent, "llm", None)
+        getter = getattr(llm, "get_token_usage_summary", None)
+        if getter is not None:
+            summary = getter()
+            counts = (
+                getattr(summary, "prompt_tokens", 0),
+                getattr(summary, "completion_tokens", 0),
+                getattr(summary, "cached_prompt_tokens", 0),
+            )
+            if counts[0] or counts[1]:
+                return counts, id(llm)
+        proc = getattr(agent, "_token_process", None)
+        if proc is None:
+            return None
+        summary = proc.get_summary()
+        return (
+            getattr(summary, "prompt_tokens", 0),
+            getattr(summary, "completion_tokens", 0),
+            getattr(summary, "cached_prompt_tokens", 0),
+        ), id(agent)
+
     def _apply_turn_usage(self, idx: int) -> None:
         """Stamp task ``idx``'s turn box with *this* turn's real token spend.
 
-        crewai's ``TaskOutput`` carries no per-task usage, but every agent holds
-        a live ``_token_process`` accumulator that the LLM callback ticks up as
-        the task runs; this fires after the agent finishes (see
-        ``Task._execute_core``), so the total is complete by now. One agent may
-        run several tasks and the accumulator is cumulative, so the turn's own
-        spend is a per-agent diff against the previous snapshot. A no-op when the
-        box is gone or the agent exposes no accumulator (subtitle stays blank)."""
+        crewai's ``TaskOutput`` carries no per-task usage, but the spend is
+        accumulated live as the task runs (see ``_agent_usage_snapshot`` for the
+        two accumulators and which path ticks which). Those totals are
+        cumulative, so the turn's own spend is a diff against the previous
+        snapshot. A no-op when the box is gone or the agent exposes no usage
+        (subtitle stays blank)."""
         if self._turn_box is None:
             return
         try:
             agent = self._crew.tasks[idx].agent
         except (IndexError, AttributeError):
             return
-        proc = getattr(agent, "_token_process", None)
-        if proc is None:
+        snapshot = self._agent_usage_snapshot(agent)
+        if snapshot is None:
             return
-        summary = proc.get_summary()
-        now = (
-            getattr(summary, "prompt_tokens", 0),
-            getattr(summary, "completion_tokens", 0),
-            getattr(summary, "cached_prompt_tokens", 0),
-        )
-        prev = self._usage_snapshots.get(id(agent), (0, 0, 0))
-        self._usage_snapshots[id(agent)] = now
+        now, key = snapshot
+        prev = self._usage_snapshots.get(key, (0, 0, 0))
+        self._usage_snapshots[key] = now
         inp, out, cached = (now[0] - prev[0], now[1] - prev[1], now[2] - prev[2])
         if inp <= 0 and out <= 0:
             # Nothing was recorded for this turn (e.g. a step with no LLM call);
@@ -370,7 +402,7 @@ class CrewAIPipelineTUI(App[None]):
         # The run finishing is a system event, not content: mark it with a
         # centred labelled rule, nothing inside. The final deliverable is already
         # rendered in the last agent turn, so repeating it here would be noise.
-        self._mount_rule("pipeline complete")
+        self._mount_rule("Pipeline Complete")
 
         # Hand the result to the host for persistence; a save failure must not
         # take the UI down, so swallow and surface it in the pipeline log.
