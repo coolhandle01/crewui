@@ -32,6 +32,7 @@ from crewai.events import (
     ToolUsageStartedEvent,
     crewai_event_bus,
 )
+from rich.rule import Rule as RichRule
 from rich.text import Text
 from textual import events, work
 from textual.app import App, ComposeResult
@@ -45,10 +46,10 @@ from crewui._helpers import (
     dispatch_on_ui_thread,
     format_metrics_block,
     format_step_message,
+    format_tool_output,
     format_tool_title,
     route_log_record,
     task_layout,
-    truncate,
 )
 
 if TYPE_CHECKING:
@@ -135,12 +136,12 @@ class CrewAIPipelineTUI(App[None]):
         self._turn_text: Static | None = None
         self._turn_lines: list[str] = []
         self._current_task_idx: int = 0
-        # The in-flight tool call: crewai emits Started then (after the tool
-        # runs) Finished, strictly one at a time, so a single pending pair is
-        # enough. _pending_coll is its collapsible (title updated on finish),
-        # _pending_tool the body Static its output fills in.
-        self._pending_coll: Collapsible | None = None
-        self._pending_tool: Static | None = None
+        # In-flight tool calls, keyed by (tool_name, args) - agents fire tools in
+        # parallel and the event bus dispatches concurrently, so a single slot
+        # loses calls. Each key holds a FIFO of (collapsible, body Static) still
+        # awaiting their Finished event; a finish pops the matching box and fills
+        # it (see _tool_started_ui / _tool_finished_ui).
+        self._pending_tools: dict[tuple[str, str], list[tuple[Collapsible, Static]]] = {}
         # Per-turn token spend: each agent holds a live token accumulator that
         # crewai's LLM callback ticks up as a task runs, cumulative across that
         # agent's turns. We snapshot it (keyed by agent id) at each task
@@ -203,10 +204,6 @@ class CrewAIPipelineTUI(App[None]):
         # keeps running after the TUI closes.
         self._log_handler = _TUILogHandler(self)
         logging.getLogger().addHandler(self._log_handler)
-        # The feedback box is the operator's turn; label its border "you" so a
-        # submitted round reads like a chat turn beside the agent boxes.
-        with contextlib.suppress(NoMatches):
-            self.query_one("#human-input", FeedbackArea).border_title = "you"
         if self._dry_run:
             self._write_crew("[yellow]Dry run mode: pipeline not started.[/yellow]")
             # Render the metrics block zeroed so the sidebar reads as a complete
@@ -359,12 +356,10 @@ class CrewAIPipelineTUI(App[None]):
             self._set_task_running(next_idx)
 
     def _on_done(self, result: object) -> None:
-        raw = getattr(result, "raw", str(result))
-        # The run finishing is a system event, not the last agent still talking,
-        # so render it as a standalone note (like the review gate) rather than
-        # appending into the final agent's box. This also ends that turn. Body is
-        # the full deliverable, not truncated - the session scrolls.
-        self._mount_note("done-box", "Pipeline Complete", raw)
+        # The run finishing is a system event, not content: mark it with a
+        # centred labelled rule, nothing inside. The final deliverable is already
+        # rendered in the last agent turn, so repeating it here would be noise.
+        self._mount_rule("pipeline complete")
 
         # Hand the result to the host for persistence; a save failure must not
         # take the UI down, so swallow and surface it in the pipeline log.
@@ -417,8 +412,9 @@ class CrewAIPipelineTUI(App[None]):
 
     def _open_agent_turn(self, idx: int) -> None:
         """Mount a fresh agent turn: a bordered container titled with the agent's
-        role and model, holding an initial text Static that output streams into.
-        Tool-call boxes mount into this same container as they happen."""
+        role and model. Text runs and tool-call boxes mount into it as they
+        happen (see _write_agent / _tool_started_ui); the container starts empty
+        so a turn that opens with a tool has no stray blank line above it."""
         self._turn_box = None
         self._turn_text = None
         try:
@@ -427,14 +423,10 @@ class CrewAIPipelineTUI(App[None]):
             logger.debug("agent-session not mounted, cannot open a turn")
             return
         self._separate(session)
-        # The text Static is composed into the container so both mount together -
-        # mounting a child into a just-mounted container in the same tick races.
-        text = Static("", classes="agent-text")
-        box = Vertical(text, classes="agent-turn")
+        box = Vertical(classes="agent-turn")
         box.border_title = self._agent_label(idx)
         session.mount(box)
         self._turn_box = box
-        self._turn_text = text
         self._turn_lines = []
         session.scroll_end(animate=False)
 
@@ -453,6 +445,21 @@ class CrewAIPipelineTUI(App[None]):
         box = Static(body, classes=css_class, markup=False)
         box.border_title = title
         session.mount(box)
+        self._turn_box = None
+        self._turn_text = None
+        session.scroll_end(animate=False)
+
+    def _mount_rule(self, label: str) -> None:
+        """Mount a centred labelled rule (``-- label --``) and end any in-progress
+        turn - a system marker in the flow, carrying no content of its own."""
+        try:
+            session = self.query_one("#agent-session", VerticalScroll)
+        except NoMatches:
+            logger.debug("agent-session not mounted, dropping %s rule", label)
+            self._turn_box = None
+            self._turn_text = None
+            return
+        session.mount(Static(RichRule(label, style="green"), classes="finish-rule"))
         self._turn_box = None
         self._turn_text = None
         session.scroll_end(animate=False)
@@ -504,14 +511,27 @@ class CrewAIPipelineTUI(App[None]):
 
     def _on_tool_finished(self, _source: object, event: object) -> None:
         """Bus handler (worker thread): a tool returned - fill its box."""
+        name = str(getattr(event, "tool_name", "tool"))
+        args = getattr(event, "tool_args", "")
         output = getattr(event, "output", "")
         from_cache = bool(getattr(event, "from_cache", False))
-        self._on_ui(self._tool_finished_ui, output, from_cache, True)
+        self._on_ui(self._tool_finished_ui, name, args, output, from_cache, True)
 
     def _on_tool_error(self, _source: object, event: object) -> None:
         """Bus handler (worker thread): a tool raised - close its box as failed."""
+        name = str(getattr(event, "tool_name", "tool"))
+        args = getattr(event, "tool_args", "")
         error = getattr(event, "error", "")
-        self._on_ui(self._tool_finished_ui, error, False, False)
+        self._on_ui(self._tool_finished_ui, name, args, error, False, False)
+
+    @staticmethod
+    def _tool_key(name: str, args: object) -> tuple[str, str]:
+        """Identity for matching a Finished event to its Started box. Agents fire
+        tool calls in parallel and the event bus dispatches them concurrently, so
+        a single pending slot loses calls; key by (name, args) instead - distinct
+        args (hydrate(cloudflare) vs hydrate(linkedin)) never collide, and repeat
+        identical calls queue FIFO under the same key."""
+        return (name, str(args))
 
     def _tool_started_ui(self, name: str, args: object) -> None:
         """Mount a collapsed tool-call box into the current turn, output pending.
@@ -528,27 +548,27 @@ class CrewAIPipelineTUI(App[None]):
             body, title=format_tool_title(name, args), collapsed=True, classes="tool-call"
         )
         self._turn_box.mount(coll)
-        self._pending_coll = coll
-        self._pending_tool = body
+        self._pending_tools.setdefault(self._tool_key(name, args), []).append((coll, body))
         # Prose after this tool opens a fresh Static below the box (see _write_agent).
         self._turn_text = None
         with contextlib.suppress(NoMatches):
             self.query_one("#agent-session", VerticalScroll).scroll_end(animate=False)
 
-    def _tool_finished_ui(self, output: object, from_cache: bool, ok: bool) -> None:
-        """Fill the in-flight tool box with its output and stamp the header.
-
-        A no-op if no box is pending - crewai emits Started before Finished, so
-        the pair is always in order, but a stray Finished must not crash."""
-        if self._pending_tool is None or self._pending_coll is None:
+    def _tool_finished_ui(
+        self, name: str, args: object, output: object, from_cache: bool, ok: bool
+    ) -> None:
+        """Fill the matching in-flight tool box with its output and stamp the
+        header. Matched by (name, args) so parallel calls each fill their own box;
+        a no-op if nothing is pending for that key (a stray or duplicate finish)."""
+        waiting = self._pending_tools.get(self._tool_key(name, args))
+        if not waiting:
             return
-        self._pending_tool.update(truncate(str(output), 4000) or "(no output)")
+        coll, body = waiting.pop(0)
+        body.update(format_tool_output(output))
         marker = " ✓" if ok else " ✗"
         if from_cache:
             marker += " ⚡"
-        self._pending_coll.title = f"{self._pending_coll.title}{marker}"
-        self._pending_coll = None
-        self._pending_tool = None
+        coll.title = f"{coll.title}{marker}"
         with contextlib.suppress(NoMatches):
             self.query_one("#agent-session", VerticalScroll).scroll_end(animate=False)
 
@@ -644,10 +664,10 @@ class CrewAIPipelineTUI(App[None]):
         if self._feedback_event is None:
             return
         self._feedback_value = event.value
-        # Echo the operator's turn into the session so a submitted round is
-        # visible; an empty submit ("accept as-is") has nothing to show.
-        if event.value.strip():
-            self._mount_note("you-box", "you", event.value)
+        # Echo the operator's turn into the session so every round is visible:
+        # feedback verbatim, or "Accepted" when they submit empty (accept as-is).
+        feedback = event.value.strip()
+        self._mount_note("you-box", "you", feedback or "Accepted")
         inp = self.query_one("#human-input", FeedbackArea)
         inp.text = ""
         inp.disabled = True

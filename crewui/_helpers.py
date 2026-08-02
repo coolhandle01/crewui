@@ -9,6 +9,8 @@ they can be branch-covered by ordinary unit tests.
 
 from __future__ import annotations
 
+import contextlib
+import json
 from typing import Any
 
 from crewai.agents.parser import AgentAction, AgentFinish
@@ -138,3 +140,17 @@ def format_tool_title(tool_name: str, tool_args: object) -> str:
     else:
         shown = str(tool_args)
     return f"> {tool_name}({truncate(shown, 80)})"
+
+
+def format_tool_output(output: object) -> str:
+    """A tool's result, ready for a collapsible body: JSON pretty-printed, other
+    text passed through, everything clipped so one giant blob cannot run away.
+
+    Tools return JSON strings (or objects that stringify to JSON); indenting them
+    turns a single unreadable line into a browsable tree. Non-JSON output (plain
+    prose, a bare number) is left as its ``str()``.
+    """
+    text = str(output)
+    with contextlib.suppress(json.JSONDecodeError, ValueError, TypeError):
+        text = json.dumps(json.loads(text), indent=2)
+    return truncate(text, 4000) or "(no output)"

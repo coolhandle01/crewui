@@ -16,6 +16,7 @@ from crewui._helpers import (
     dispatch_on_ui_thread,
     format_metrics_block,
     format_step_message,
+    format_tool_output,
     format_tool_title,
     route_log_record,
     task_layout,
@@ -193,3 +194,20 @@ class TestFormatToolTitle:
         title = format_tool_title("t", "x" * 200)
         # Clipped to 80 chars inside the parens; the full input is in the body.
         assert title == "> t(" + "x" * 80 + ")"
+
+
+class TestFormatToolOutput:
+    def test_pretty_prints_a_json_string(self) -> None:
+        out = format_tool_output('{"handle": "cloudflare", "assets": [1, 2]}')
+        # Indented and multi-line, not one unreadable blob.
+        assert '"handle": "cloudflare"' in out
+        assert "\n" in out
+
+    def test_passes_non_json_text_through_unchanged(self) -> None:
+        assert format_tool_output("found 3 subdomains") == "found 3 subdomains"
+
+    def test_empty_output_reads_as_no_output(self) -> None:
+        assert format_tool_output("") == "(no output)"
+
+    def test_clips_a_giant_result(self) -> None:
+        assert len(format_tool_output("x" * 9000)) == 4000

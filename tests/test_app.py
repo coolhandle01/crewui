@@ -106,18 +106,20 @@ class TestRun:
             assert " Cost:    $0.5000" in block
             assert " Status:  done" in block
 
-    async def test_completion_renders_a_system_done_box(self, make_crew: MakeCrew) -> None:
-        # The run's end is a system note (like the review gate), not the last
-        # agent's box: a standalone done-box holds the final deliverable.
+    async def test_completion_renders_a_labelled_rule_not_a_box(
+        self, make_crew: MakeCrew
+    ) -> None:
+        # The run's end is a marker, not content: a centred labelled rule, with
+        # the deliverable staying in the last agent turn (not repeated here).
         result = FakeResult(raw="the final plan")
         app = CrewAIPipelineTUI(crew=make_crew(result=result))
         async with app.run_test() as pilot:
-            assert await _wait_for(pilot, lambda: bool(app.query(".done-box")))
-            box = app.query_one(".done-box", Static)
-            assert str(box.border_title) == "Pipeline Complete"
-            assert "the final plan" in str(box.render())
-            # It is not an agent turn box.
-            assert "agent-turn" not in box.classes
+            assert await _wait_for(pilot, lambda: bool(app.query(".finish-rule")))
+            rule = app.query_one(".finish-rule", Static)
+            assert "pipeline complete" in str(rule.render())
+            # The rule carries no box and does not repeat the deliverable.
+            assert "the final plan" not in str(rule.render())
+            assert not app.query(".done-box")
 
     async def test_run_without_token_usage_leaves_metrics_untouched(
         self, make_crew: MakeCrew
@@ -433,7 +435,7 @@ class TestAgentSession:
             assert you[0].border_title == "you"
             assert "pick basecamp" in str(you[0].render())
 
-    async def test_empty_feedback_echoes_no_you_box(self, make_crew: MakeCrew) -> None:
+    async def test_empty_feedback_echoes_an_accepted_you_box(self, make_crew: MakeCrew) -> None:
         app = CrewAIPipelineTUI(crew=make_crew())
         async with app.run_test() as pilot:
             captured: list[str] = []
@@ -449,7 +451,10 @@ class TestAgentSession:
             await pilot.press("enter")  # empty submit = accept as-is
             worker.join(timeout=2)
             await pilot.pause(0.05)
-            assert list(app.query(".you-box")) == []
+            # An empty accept still reads as a "you" turn - labelled "Accepted".
+            you = list(app.query(".you-box").results(Static))
+            assert len(you) == 1
+            assert "Accepted" in str(you[0].render())
 
     async def test_task_usage_stamps_the_turn_subtitle(self, make_crew: MakeCrew) -> None:
         crew = make_crew()
@@ -583,7 +588,9 @@ class TestToolCalls:
             app._open_agent_turn(0)
             await pilot.pause(0.05)
             app._tool_started_ui("search_web", {"q": "lisbon"})
-            app._tool_finished_ui("mild ~22C; Alfama", from_cache=True, ok=True)
+            app._tool_finished_ui(
+                "search_web", {"q": "lisbon"}, "mild ~22C; Alfama", from_cache=True, ok=True
+            )
             await pilot.pause(0.05)
             coll = app.query_one(".tool-call", Collapsible)
             # Success tick plus a cache marker; the output fills the body.
@@ -597,8 +604,10 @@ class TestToolCalls:
             app._open_agent_turn(0)
             await pilot.pause(0.05)
             app._tool_started_ui("recon", "example.com")
-            # Through the error bus handler, which pulls .error off the event.
-            app._on_tool_error(None, SimpleNamespace(error="boom"))
+            # Through the error bus handler, which pulls name/args/.error off the event.
+            app._on_tool_error(
+                None, SimpleNamespace(tool_name="recon", tool_args="example.com", error="boom")
+            )
             await pilot.pause(0.05)
             coll = app.query_one(".tool-call", Collapsible)
             assert "✗" in coll.title
@@ -637,7 +646,15 @@ class TestToolCalls:
             # Fake events with the fields the handlers read; calling on the UI
             # thread dispatches the render directly (no worker bounce).
             app._on_tool_started(None, SimpleNamespace(tool_name="recon", tool_args={"host": "x"}))
-            app._on_tool_finished(None, SimpleNamespace(output="found 2 hosts", from_cache=False))
+            app._on_tool_finished(
+                None,
+                SimpleNamespace(
+                    tool_name="recon",
+                    tool_args={"host": "x"},
+                    output="found 2 hosts",
+                    from_cache=False,
+                ),
+            )
             await pilot.pause(0.05)
             coll = app.query_one(".tool-call", Collapsible)
             assert coll.title.startswith("> recon(host=x)")
@@ -650,23 +667,30 @@ class TestToolCalls:
             app._open_agent_turn(0)
             await pilot.pause(0.05)
             # A stray finished event (no start) must not crash or mount anything.
-            app._tool_finished_ui("orphan", from_cache=False, ok=True)
+            app._tool_finished_ui("nothing", "x", "orphan", from_cache=False, ok=True)
             await pilot.pause(0.05)
             assert not app.query(".tool-call")
 
-    async def test_sequential_tool_calls_each_get_their_own_box(
+    async def test_parallel_tool_calls_each_fill_their_own_box(
         self, make_crew: MakeCrew
     ) -> None:
-        # crewai emits one Started/Finished pair at a time; the pending box must
-        # be matched to its own result, not overwritten by the next call.
+        # The bug this fixes: agents fire tools in parallel and the event bus
+        # dispatches concurrently, so both Starts can land before either Finish.
+        # Drive that interleaving (start A, start B, finish A, finish B) and
+        # assert each result lands in its own box, matched by (name, args).
         app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
         async with app.run_test() as pilot:
             app._open_agent_turn(0)
             await pilot.pause(0.05)
-            app._tool_started_ui("browse", {"q": "programmes"})
-            app._tool_finished_ui("found 10 programmes", from_cache=False, ok=True)
-            app._tool_started_ui("hydrate", {"handle": "acme"})
-            app._tool_finished_ui("scope: 3 wildcard hosts", from_cache=True, ok=True)
+            app._tool_started_ui("hydrate", {"handle": "cloudflare"})
+            app._tool_started_ui("hydrate", {"handle": "linkedin"})
+            # Finish out of start order to prove matching, not positional luck.
+            app._tool_finished_ui(
+                "hydrate", {"handle": "linkedin"}, "scope: linkedin.com", from_cache=True, ok=True
+            )
+            app._tool_finished_ui(
+                "hydrate", {"handle": "cloudflare"}, "scope: 50 assets", from_cache=False, ok=True
+            )
             await pilot.pause(0.05)
             colls = list(app.query(".tool-call").results(Collapsible))
             assert len(colls) == 2
@@ -674,14 +698,16 @@ class TestToolCalls:
             def body(coll: Collapsible) -> str:
                 return " ".join(str(s.render()) for s in coll.query(".tool-out").results(Static))
 
-            assert colls[0].title.startswith("> browse")
-            assert "found 10 programmes" in body(colls[0])
-            assert "⚡" not in colls[0].title  # first was not cached
-            assert colls[1].title.startswith("> hydrate")
-            assert "⚡" in colls[1].title  # second was
-            # The second result landed in the second box, not the first.
-            assert "3 wildcard hosts" in body(colls[1])
-            assert "3 wildcard hosts" not in body(colls[0])
+            # colls[0] was started for cloudflare, colls[1] for linkedin - each got
+            # its own result despite the finishes arriving in the other order, and
+            # neither is stuck "running".
+            assert colls[0].title.startswith("> hydrate(handle=cloudflare)")
+            assert "50 assets" in body(colls[0])
+            assert "running" not in body(colls[0])
+            assert "⚡" not in colls[0].title
+            assert colls[1].title.startswith("> hydrate(handle=linkedin)")
+            assert "linkedin.com" in body(colls[1])
+            assert "⚡" in colls[1].title  # linkedin came from cache
 
     async def test_turn_with_no_tool_calls_renders_text_only(self, make_crew: MakeCrew) -> None:
         app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
@@ -703,7 +729,7 @@ class TestToolCalls:
             await pilot.pause(0.05)
             app._write_agent("thinking")
             app._tool_started_ui("recon", "x")
-            app._tool_finished_ui("done", from_cache=False, ok=True)
+            app._tool_finished_ui("recon", "x", "done", from_cache=False, ok=True)
             app._write_agent("the answer")
             await pilot.pause(0.05)
             turn = app.query_one(".agent-turn", Vertical)

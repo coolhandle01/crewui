@@ -125,18 +125,15 @@ Screen {
     padding: 1 2;
 }
 
-/* The run's final deliverable: a system note that closes the session the way
-   the gate box opens a review - green, centred title, outside the agent turns. */
-.done-box {
-    border: round $success;
-    border-title-align: center;
+/* The run's end: a centred labelled rule in the flow (-- pipeline complete --),
+   no box and no content - the deliverable already sits in the last agent turn. */
+.finish-rule {
     height: auto;
     margin: 1 0 0 0;
-    padding: 1 2;
 }
 
 /* An echoed operator turn: blue, labelled "you" on the right rail to mirror
-   the agent boxes. */
+   the agent boxes. This is where the "you" branding lives - not the input box. */
 .you-box {
     border: round $primary;
     border-title-align: right;
@@ -145,16 +142,11 @@ Screen {
     padding: 0 1;
 }
 
+/* The input box is a plain editor, not a decorated turn - the sent message
+   (.you-box) carries the "you" identity once submitted. */
 #human-input {
     margin: 0 1 1 1;
     height: 5;
-    border: round $primary;
-    border-title-align: right;
-}
-
-#human-input:focus {
-    border: round $accent;
-    border-title-align: right;
 }
 
 #human-input:disabled {
