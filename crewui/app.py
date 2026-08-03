@@ -32,7 +32,12 @@ from crewai.events import (
     ToolUsageStartedEvent,
     crewai_event_bus,
 )
-from crewai.events.types.llm_events import LLMThinkingChunkEvent
+
+# Re-exported (explicit alias) so the demo can import it from here rather than
+# open a second import of this private crewai submodule - app.py is the one seam.
+from crewai.events.types.llm_events import (  # pylint: disable=useless-import-alias
+    LLMThinkingChunkEvent as LLMThinkingChunkEvent,
+)
 from rich.errors import MarkupError
 from rich.markup import escape
 from rich.rule import Rule as RichRule

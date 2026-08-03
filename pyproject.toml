@@ -51,10 +51,12 @@ classifiers = [
 # domain-specific is injected by the host through callbacks, so nothing else
 # belongs here.
 #
-# crewai is pinned to <1.16 rather than left open because the human-input
-# routing leans on crewai.core.providers.human_input - a semi-internal API
-# (the one place crewui reaches past the public surface, isolated in app.py).
-# A minor bump is a review event: re-check that seam, then move the ceiling.
+# crewai is pinned to <1.16 rather than left open because crewui reaches past
+# crewai's public surface in three semi-internal seams (see README): the
+# human-input provider (crewai.core.providers.human_input), the reasoning event
+# (crewai.events.types.llm_events.LLMThinkingChunkEvent, imported once in
+# app.py), and the ReAct parser types (crewai.agents.parser). A minor bump is a
+# review event: re-check each seam, then move the ceiling.
 # The floor is 1.15.6, the first release where the executor's
 # ask_for_human_input compat property is back (a 1.14.5 regression crashed
 # human_input; see the fork note in README).

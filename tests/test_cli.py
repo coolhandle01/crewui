@@ -99,3 +99,18 @@ class TestDemoCrew:
         demo.run_demo(dry_run=True)
         assert captured["dry_run"] is True
         assert captured["record_prefix"] == "crewui.demo"
+
+    def test_reasoning_event_seam_is_consolidated_to_app(self) -> None:
+        # LLMThinkingChunkEvent is on a private crewai submodule; app.py is the
+        # single place that reaches for it. The demo must re-use it from there,
+        # not re-open the internal import - so the version-pin seam count stays
+        # honest (see the pin rationale).
+        from pathlib import Path
+
+        import crewui.app as app_mod
+        import crewui.demo as demo
+
+        assert demo.LLMThinkingChunkEvent is app_mod.LLMThinkingChunkEvent
+        demo_src = Path(demo.__file__).read_text()
+        assert "from crewui.app import" in demo_src
+        assert "crewai.events.types" not in demo_src  # no second seam

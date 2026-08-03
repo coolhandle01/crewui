@@ -41,9 +41,11 @@ from crewai.events import (
     ToolUsageStartedEvent,
     crewai_event_bus,
 )
-from crewai.events.types.llm_events import LLMThinkingChunkEvent
 
-from crewui.app import CrewAIPipelineTUI
+# LLMThinkingChunkEvent lives on a private crewai submodule (not in
+# crewai.events public surface); app.py is the single place that reaches for it,
+# so the demo re-imports it from there rather than opening a second seam.
+from crewui.app import CrewAIPipelineTUI, LLMThinkingChunkEvent
 
 
 class _Phase(NamedTuple):
