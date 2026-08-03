@@ -70,14 +70,14 @@ def test_breakglass_exits_fast_and_kills_children() -> None:
         timeout=20,  # a hung teardown would blow this; break-glass returns in <1s
     )
 
-    # Hard-exit(0) from the panic path: clean, fast, and never reached the end.
-    assert proc.returncode == 0, f"stdout={proc.stdout!r} stderr={proc.stderr[-2000:]!r}"
+    # Break-glass aborts an in-flight run, so it exits 130 (128 + SIGINT), the
+    # interrupt convention - not 0, which would read to a wrapper or CI as a
+    # clean completion. Fast, and it never reached the end.
+    assert proc.returncode == 130, f"stdout={proc.stdout!r} stderr={proc.stderr[-2000:]!r}"
     assert "REACHED_END" not in proc.stdout, "app did not hard-exit at the gate"
 
     child_pids = [
-        int(line.split("=", 1)[1])
-        for line in proc.stdout.splitlines()
-        if line.startswith("CHILD=")
+        int(line.split("=", 1)[1]) for line in proc.stdout.splitlines() if line.startswith("CHILD=")
     ]
     assert child_pids, f"driver did not report a child pid: {proc.stdout!r}"
 

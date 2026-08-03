@@ -88,9 +88,15 @@ crewui declares `crewai>=1.15.6,<1.16`.
   regression crashed `human_input=True` with
   `'AgentExecutor' object has no attribute 'ask_for_human_input'`; below the
   floor, the human-review feature does not work.
-- **The ceiling (<1.16)** is deliberate, not lazy. The human-input routing is
-  the one place crewui reaches past crewai's public surface, so a minor bump is
-  a review event: re-check that seam, then move the ceiling.
+- **The ceiling (<1.16)** is deliberate, not lazy. crewui reaches past crewai's
+  public surface in three places, so a minor bump is a review event: re-check
+  each seam, then move the ceiling.
+  - `crewai.core.providers.human_input` — the review-gate routing (`crewui/app.py`).
+  - `crewai.events.types.llm_events.LLMThinkingChunkEvent` — the reasoning event,
+    not exported from `crewai.events`; imported once in `crewui/app.py` and
+    re-used from there (including by the demo).
+  - `crewai.agents.parser.AgentAction` / `AgentFinish` — the ReAct step types
+    `format_step_message` renders (`crewui/_helpers.py`, and the demo).
 
 There is a **second, separate** human-input bug that a stock PyPI crewai still
 carries: the feedback prompt tells the operator to review "the Final Result

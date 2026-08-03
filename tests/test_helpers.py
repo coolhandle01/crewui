@@ -11,11 +11,14 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from crewai.agents.parser import AgentAction, AgentFinish
+from rich.text import Text
 
 from crewui._helpers import (
     dispatch_on_ui_thread,
     format_metrics_block,
     format_step_message,
+    format_tool_output,
+    format_tool_title,
     route_log_record,
     task_layout,
     truncate,
@@ -86,40 +89,71 @@ class TestTaskLayout:
         assert task_layout([]) == []
 
     def test_uses_task_name_as_heading_and_role_as_row(self) -> None:
-        assert task_layout([_task("Reconnaissance", "scout")]) == [("Reconnaissance", "scout")]
+        # Each entry carries the task's crew-task index (0 here).
+        assert task_layout([_task("Reconnaissance", "scout")]) == [(0, "Reconnaissance", "scout")]
 
     def test_one_agent_two_tasks_keep_distinct_headings(self) -> None:
-        # One agent runs two phases: same role, distinct per-task names.
+        # One agent runs two phases: same role, distinct per-task names, indices 0/1.
         layout = task_layout(
             [
                 _task("Research", "analyst"),
                 _task("Triage", "analyst"),
             ]
         )
-        assert layout == [("Research", "analyst"), ("Triage", "analyst")]
+        assert layout == [(0, "Research", "analyst"), (1, "Triage", "analyst")]
 
     def test_missing_name_falls_back_to_role(self) -> None:
         # A task with no name (None) uses the agent role as the heading.
-        assert task_layout([_task(None, "scribe")]) == [("scribe", "scribe")]
+        assert task_layout([_task(None, "scribe")]) == [(0, "scribe", "scribe")]
 
-    def test_task_without_agent_is_skipped(self) -> None:
+    def test_task_without_agent_keeps_the_real_crew_index(self) -> None:
+        # The skipped Orphan is at index 0, so Recon keeps its true crew index 1 -
+        # this is the divergence the crew-index -> row map relies on.
         layout = task_layout([_task("Orphan", None), _task("Recon", "scout")])
-        assert layout == [("Recon", "scout")]
+        assert layout == [(1, "Recon", "scout")]
 
 
 class TestFormatMetricsBlock:
-    def test_renders_thousands_separator_and_fixed_decimals(self) -> None:
-        block = format_metrics_block(total_tokens=12345, estimated_cost_usd=0.0418)
-        assert " Tokens:  12,345" in block
+    def test_splits_tokens_and_renders_separators_and_decimals(self) -> None:
+        block = format_metrics_block(
+            input_tokens=9000,
+            output_tokens=3345,
+            cached_tokens=512,
+            total_tokens=12345,
+            estimated_cost_usd=0.0418,
+        )
+        # Input / output / cached carry arrows (up / down / recycle); total,
+        # cost and status keep their labels.
+        assert " ↑ 9,000" in block
+        assert " ↓ 3,345" in block
+        assert " ↻ 512" in block
+        assert " Total:   12,345" in block
         assert " Cost:    $0.0418" in block
         assert " Status:  done" in block
 
     def test_status_override_renders_custom_status(self) -> None:
         # The dry-run sidebar renders the block zeroed with a "dry run" status.
-        block = format_metrics_block(total_tokens=0, estimated_cost_usd=0.0, status="dry run")
-        assert " Tokens:  0" in block
+        block = format_metrics_block(
+            input_tokens=0,
+            output_tokens=0,
+            cached_tokens=0,
+            total_tokens=0,
+            estimated_cost_usd=0.0,
+            status="dry run",
+        )
+        assert " Total:   0" in block
         assert " Cost:    $0.0000" in block
         assert " Status:  dry run" in block
+
+
+class TestCompactTokens:
+    def test_compacts_thousands_and_leaves_small_counts(self) -> None:
+        from crewui._helpers import compact_tokens
+
+        assert compact_tokens(1200) == "1.2k"
+        assert compact_tokens(1610) == "1.6k"
+        assert compact_tokens(340) == "340"
+        assert compact_tokens(0) == "0"
 
 
 class TestFormatStepMessage:
@@ -152,3 +186,74 @@ class TestFormatStepMessage:
         msg = format_step_message("random output " + "z" * 500)
         assert msg.startswith("random output ")
         assert len(msg) == 300
+
+    # Agent output is arbitrary text - a pentest agent routinely emits bracketed
+    # POSIX paths ("[/etc/hosts]") that read as stray Rich markup tags. The
+    # formatted message must stay parseable markup so the session pane can render
+    # it, with the agent's own content shown literally rather than interpreted.
+    def test_bracketed_answer_stays_parseable_markup(self) -> None:
+        finish = AgentFinish(thought="done", output="see file [/etc/hosts]", text="t")
+        rendered = Text.from_markup(format_step_message(finish))  # must not raise
+        assert "/etc/hosts" in rendered.plain
+
+    def test_bracketed_action_payloads_stay_parseable(self) -> None:
+        action = _make_action(
+            tool="scan",
+            tool_input="path=[/tmp/x]",
+            thought="open [/root]?",
+            result="wrote [/etc/passwd]",
+        )
+        rendered = Text.from_markup(format_step_message(action))  # must not raise
+        assert "[/tmp/x]" in rendered.plain
+        assert "[/etc/passwd]" in rendered.plain
+        assert "[/root]" in rendered.plain
+
+    def test_style_shaped_payload_renders_literally_not_as_style(self) -> None:
+        # Balanced tags in agent output must show as text, not be consumed as
+        # styling (which would also let output forge UI chrome into the pane).
+        finish = AgentFinish(thought="d", output="danger [red]text[/red]", text="t")
+        rendered = Text.from_markup(format_step_message(finish))
+        assert "[red]text[/red]" in rendered.plain
+
+    def test_other_step_type_escapes_brackets(self) -> None:
+        rendered = Text.from_markup(format_step_message("boom [/etc/hosts]"))  # must not raise
+        assert "[/etc/hosts]" in rendered.plain
+
+
+class TestFormatToolTitle:
+    def test_dict_args_render_as_key_value_pairs(self) -> None:
+        title = format_tool_title("search_web", {"q": "lisbon", "n": 3})
+        assert title == "> search_web(q=lisbon, n=3)"
+
+    def test_string_args_pass_through(self) -> None:
+        assert format_tool_title("recon", "example.com") == "> recon(example.com)"
+
+    def test_long_args_are_clipped_to_keep_the_header_short(self) -> None:
+        title = format_tool_title("t", "x" * 200)
+        # Clipped to 80 chars inside the parens; the full input is in the body.
+        assert title == "> t(" + "x" * 80 + ")"
+
+
+class TestFormatToolOutput:
+    def test_pretty_prints_a_json_string(self) -> None:
+        out = format_tool_output('{"handle": "cloudflare", "assets": [1, 2]}')
+        # Indented and multi-line, not one unreadable blob.
+        assert '"handle": "cloudflare"' in out
+        assert "\n" in out
+
+    def test_passes_non_json_text_through_unchanged(self) -> None:
+        assert format_tool_output("found 3 subdomains") == "found 3 subdomains"
+
+    def test_empty_output_reads_as_no_output(self) -> None:
+        assert format_tool_output("") == "(no output)"
+
+    def test_clips_a_giant_result(self) -> None:
+        assert len(format_tool_output("x" * 9000)) == 4000
+
+    def test_huge_output_skips_the_json_pretty_print(self) -> None:
+        # A blob past the pretty-print limit must not be json-parsed (the result
+        # is clipped to 4000 anyway) - returned truncated raw, not indented.
+        huge = '{"k": "' + "x" * 200_000 + '"}'
+        out = format_tool_output(huge)
+        assert out.startswith('{"k": "')  # raw, not the indented '{\n  "k"'
+        assert len(out) == 4000

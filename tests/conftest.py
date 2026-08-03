@@ -27,7 +27,12 @@ class FakeTask:
     agent: SimpleNamespace = field(init=False)
 
     def __post_init__(self) -> None:
-        self.agent = SimpleNamespace(role=self.role)
+        # ``_token_process`` is the real crewai accumulator: the App reads the
+        # per-turn subtitle from ``agent._token_process.get_summary()``, so the
+        # fake carries the genuine object a live run would tick up.
+        from crewai.agents.agent_builder.utilities.base_token_process import TokenProcess
+
+        self.agent = SimpleNamespace(role=self.role, _token_process=TokenProcess())
 
 
 @dataclass
@@ -58,19 +63,27 @@ class FakeCrew:
         result: object | None = None,
         steps: list[object] | None = None,
         raise_on_kickoff: bool = False,
+        raise_message: str = "boom",
+        block_until: object | None = None,
     ) -> None:
         self.tasks = tasks
         self.step_callback: Callable[[object], None] | None = None
         self._result = result if result is not None else FakeResult()
         self._steps = steps or []
         self._raise = raise_on_kickoff
+        self._raise_message = raise_message
+        # A threading.Event kickoff parks on before doing any work, so a test can
+        # observe the mid-run UI (e.g. the zeroed live metrics) before releasing.
+        self._block_until = block_until
 
     def kickoff(self) -> object:
+        if self._block_until is not None:
+            self._block_until.wait(timeout=5)
         for step in self._steps:
             if self.step_callback is not None:
                 self.step_callback(step)
         if self._raise:
-            raise RuntimeError("boom")
+            raise RuntimeError(self._raise_message)
         for task in self.tasks:
             if task.callback is not None:
                 task.callback("done")
@@ -86,6 +99,8 @@ def make_crew() -> Callable[..., FakeCrew]:
         result: object | None = None,
         steps: list[object] | None = None,
         raise_on_kickoff: bool = False,
+        raise_message: str = "boom",
+        block_until: object | None = None,
     ) -> FakeCrew:
         if tasks is None:
             tasks = [
@@ -94,7 +109,12 @@ def make_crew() -> Callable[..., FakeCrew]:
                 FakeTask("Report", "scribe"),
             ]
         return FakeCrew(
-            tasks=tasks, result=result, steps=steps, raise_on_kickoff=raise_on_kickoff
+            tasks=tasks,
+            result=result,
+            steps=steps,
+            raise_on_kickoff=raise_on_kickoff,
+            raise_message=raise_message,
+            block_until=block_until,
         )
 
     return _make

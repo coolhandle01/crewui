@@ -56,7 +56,7 @@ Screen {
     border-top: solid $surface;
     padding: 1;
     color: $text-muted;
-    height: 6;
+    height: 8;
 }
 
 #main {
@@ -64,36 +64,126 @@ Screen {
     width: 1fr;
 }
 
+/* The panes own the horizontal inset so every child - title, scroll, input -
+   shares one left/right rhythm, and the two scrollables' bars land in the same
+   column (a child's own margin would shrink its siblings and skew that). */
 #messages-pane {
     height: 60%;
     border-bottom: solid $surface;
     layout: vertical;
+    padding: 0 1;
 }
 
 .pane-title {
-    padding: 0 1;
     color: $accent;
     text-style: bold;
     height: 1;
 }
 
-#agent-log {
+#agent-session {
     height: 1fr;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+}
+
+/* One container per agent turn: role and model on the top rail, per-turn token
+   cost on the bottom rail (border_subtitle, set on completion). Holds the
+   agent's text plus any tool-call boxes, in the order they happened. */
+.agent-turn {
+    border: round $success;
+    border-title-align: left;
+    border-subtitle-align: right;
+    height: auto;
+    margin: 1 0 0 0;
     padding: 0 1;
 }
 
+/* The agent's own prose within a turn - a run of streamed text between tool
+   calls. Bare (no border); the turn container carries the frame. */
+.agent-text {
+    height: auto;
+}
+
+/* A tool call within a turn: collapsed by default (Collapsible) so a long
+   result stays folded away; dimmed so it reads as secondary to the prose. The
+   header rail carries `> tool(args)`, stamped with the outcome on completion. */
+.tool-call {
+    height: auto;
+    color: $text-muted;
+    margin: 0;
+}
+
+.tool-out {
+    height: auto;
+    color: $text-muted;
+}
+
+/* The agent's extended thinking, streamed in as it reasons - collapsed by
+   default (long and secondary), dim and italic so it sits behind the prose.
+   Expand it to read how the agent got to its answer. */
+.reasoning-box {
+    height: auto;
+    color: $text-muted;
+    text-style: italic;
+    margin: 0;
+}
+
+.reasoning-out {
+    height: auto;
+    color: $text-muted;
+}
+
+/* The human-review prompt - unmissable, centred title. */
+.gate-box {
+    border: round $warning;
+    border-title-align: center;
+    color: $warning;
+    height: auto;
+    margin: 1 0 0 0;
+    padding: 1 2;
+}
+
+/* The run's end: a centred labelled rule in the flow (-- pipeline complete --),
+   no box and no content - the deliverable already sits in the last agent turn. */
+.finish-rule {
+    height: auto;
+    margin: 1 0 0 0;
+}
+
+/* An echoed operator turn: blue, labelled "you" on the right rail to mirror
+   the agent boxes. This is where the "you" branding lives - not the input box. */
+.you-box {
+    border: round $primary;
+    border-title-align: right;
+    height: auto;
+    margin: 1 0 0 0;
+    padding: 0 1;
+}
+
+/* Full-width wrapper around the input so a derived theme can inset the box via
+   a margin on #human-input without shrinking the pane (see the compose note). */
+#input-wrap {
+    height: auto;
+}
+
+/* The input box is a plain editor, not a decorated turn - the sent message
+   (.you-box) carries the "you" identity once submitted. */
 #human-input {
-    margin: 0 1 1 1;
+    height: 5;
+    margin-bottom: 1;
+}
+
+#human-input:disabled {
     opacity: 0.4;
 }
 
 #logs-pane {
     height: 40%;
     layout: vertical;
+    padding: 0 1;
 }
 
 #logs-title {
-    padding: 0 1;
     color: $text-muted;
     text-style: bold;
     height: 1;
@@ -101,5 +191,5 @@ Screen {
 
 #crew-log {
     height: 1fr;
-    padding: 0 1;
+    scrollbar-gutter: stable;
 }

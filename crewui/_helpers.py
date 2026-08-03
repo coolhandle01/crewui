@@ -9,9 +9,12 @@ they can be branch-covered by ordinary unit tests.
 
 from __future__ import annotations
 
+import contextlib
+import json
 from typing import Any
 
 from crewai.agents.parser import AgentAction, AgentFinish
+from rich.markup import escape
 
 
 def truncate(text: str, limit: int) -> str:
@@ -47,31 +50,62 @@ def dispatch_on_ui_thread(current_thread_id: int, ui_thread_id: int | None) -> b
     return ui_thread_id is not None and current_thread_id == ui_thread_id
 
 
-def task_layout(tasks: list[Any]) -> list[tuple[str, str]]:
+def task_layout(tasks: list[Any]) -> list[tuple[int, str, str]]:
     """Build the sidebar entries for a sequential pipeline.
 
-    For each task that has an assigned agent, return a ``(heading, role)``
-    pair in pipeline order. ``heading`` is the task's display name
-    (``Task.name``), falling back to the agent role when a task carries no
-    name; ``role`` is the agent role shown on the task's status row. Because
-    the heading is per-task rather than per-agent, an agent that runs more than
-    one task in the pipeline gets a distinct heading for each.
+    For each task that has an assigned agent, return a
+    ``(crew_index, heading, role)`` triple in pipeline order. ``crew_index`` is
+    the task's position in ``tasks`` - carried so the caller can map a crew-task
+    index (which callbacks fire by) to its sidebar row, since agent-less tasks
+    are skipped and the two indices otherwise diverge. ``heading`` is the task's
+    display name (``Task.name``), falling back to the agent role when a task
+    carries no name; ``role`` is the agent role shown on the task's status row.
+    Because the heading is per-task rather than per-agent, an agent that runs
+    more than one task in the pipeline gets a distinct heading for each.
 
     Tasks with no agent are skipped, so a partially-wired crew never raises.
     """
-    layout: list[tuple[str, str]] = []
-    for task in tasks:
+    layout: list[tuple[int, str, str]] = []
+    for crew_index, task in enumerate(tasks):
         agent = getattr(task, "agent", None)
         if agent is None:
             continue
         role = agent.role
-        layout.append((task.name or role, role))
+        layout.append((crew_index, task.name or role, role))
     return layout
 
 
-def format_metrics_block(total_tokens: int, estimated_cost_usd: float, status: str = "done") -> str:
-    """Render the fixed-width metrics summary shown in the sidebar."""
-    return f" Tokens:  {total_tokens:,}\n Cost:    ${estimated_cost_usd:.4f}\n Status:  {status}"
+def format_metrics_block(
+    input_tokens: int,
+    output_tokens: int,
+    cached_tokens: int,
+    total_tokens: int,
+    estimated_cost_usd: float,
+    status: str = "done",
+) -> str:
+    """Render the fixed-width metrics summary shown in the sidebar.
+
+    Tokens are split input / output / cached / total so the panel reflects the
+    aggregate usage crewai reports (prompt / completion / cached_prompt) rather
+    than a single opaque count.
+    """
+    return (
+        f" ↑ {input_tokens:,}\n"
+        f" ↓ {output_tokens:,}\n"
+        f" ↻ {cached_tokens:,}\n"
+        f" Total:   {total_tokens:,}\n"
+        f" Cost:    ${estimated_cost_usd:.4f}\n"
+        f" Status:  {status}"
+    )
+
+
+def compact_tokens(n: int) -> str:
+    """Compact a token count for a tight label: ``1200 -> '1.2k'``, ``340 -> '340'``.
+
+    Used on the per-turn box subtitle, where horizontal room on the border rail
+    is scarce.
+    """
+    return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
 
 
 def format_step_message(step: object) -> str:
@@ -86,13 +120,57 @@ def format_step_message(step: object) -> str:
     crewai parser types - the caller's callback is responsible for swallowing
     any unexpected exceptions, since the step-callback contract is
     fire-and-forget telemetry.
+
+    Every interpolated payload is ``rich.markup.escape``-d: agent output is
+    arbitrary text (a bracketed POSIX path like ``[/etc/hosts]`` reads as a
+    stray closing tag and would raise ``MarkupError``), so only this function's
+    own style tags stay live markup - the agent's content renders literally.
     """
     if isinstance(step, AgentAction):
-        tool_call = f"[cyan]> {step.tool}[/cyan]({truncate(step.tool_input, 120)})"
-        msg = f"[yellow]Thought:[/yellow] {step.thought}\n{tool_call}"
+        tool_call = f"[cyan]> {escape(step.tool)}[/cyan]({escape(truncate(step.tool_input, 120))})"
+        msg = f"[yellow]Thought:[/yellow] {escape(step.thought)}\n{tool_call}"
         if step.result:
-            msg += f"\n[dim]{truncate(step.result, 300)}[/dim]"
+            msg += f"\n[dim]{escape(truncate(step.result, 300))}[/dim]"
         return msg
     if isinstance(step, AgentFinish):
-        return f"[bold green]Answer:[/bold green] {step.output}"
-    return truncate(str(step), 300)
+        return f"[bold green]Answer:[/bold green] {escape(step.output)}"
+    return escape(truncate(str(step), 300))
+
+
+def format_tool_title(tool_name: str, tool_args: object) -> str:
+    """``> tool(args)`` for a tool-call collapsible's header rail.
+
+    ``tool_args`` is CrewAI's ``dict | str``: a dict renders as ``k=v`` pairs, a
+    string passes through. The rendered args are clipped so the collapsed header
+    stays one short line - the full input is a click away in the expanded body.
+    """
+    if isinstance(tool_args, dict):
+        shown = ", ".join(f"{key}={value}" for key, value in tool_args.items())
+    else:
+        shown = str(tool_args)
+    return f"> {tool_name}({truncate(shown, 80)})"
+
+
+# Above this size, skip the JSON pretty-print in format_tool_output: the result
+# is clipped to 4000 chars anyway, so parsing a larger blob is wasted work.
+_JSON_PRETTY_LIMIT = 100_000
+
+
+def format_tool_output(output: object) -> str:
+    """A tool's result, ready for a collapsible body: JSON pretty-printed, other
+    text passed through, everything clipped so one giant blob cannot run away.
+
+    Tools return JSON strings (or objects that stringify to JSON); indenting them
+    turns a single unreadable line into a browsable tree. Non-JSON output (plain
+    prose, a bare number) is left as its ``str()``.
+    """
+    text = str(output)
+    # Only attempt the pretty-print on reasonably sized output: json.loads +
+    # dumps runs on the *whole* blob before the 4000-char clip, so a 20MB tool
+    # result would stall the event loop and allocate ~2x just to show 4KB. Above
+    # the limit, skip straight to the clip. (JSONDecodeError is a ValueError, so
+    # ValueError alone covers a non-JSON string.)
+    if len(text) <= _JSON_PRETTY_LIMIT:
+        with contextlib.suppress(ValueError, TypeError):
+            text = json.dumps(json.loads(text), indent=2)
+    return truncate(text, 4000) or "(no output)"

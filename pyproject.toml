@@ -51,16 +51,21 @@ classifiers = [
 # domain-specific is injected by the host through callbacks, so nothing else
 # belongs here.
 #
-# crewai is pinned to <1.16 rather than left open because the human-input
-# routing leans on crewai.core.providers.human_input - a semi-internal API
-# (the one place crewui reaches past the public surface, isolated in app.py).
-# A minor bump is a review event: re-check that seam, then move the ceiling.
+# crewai is pinned to <1.16 rather than left open because crewui reaches past
+# crewai's public surface in three semi-internal seams (see README): the
+# human-input provider (crewai.core.providers.human_input), the reasoning event
+# (crewai.events.types.llm_events.LLMThinkingChunkEvent, imported once in
+# app.py), and the ReAct parser types (crewai.agents.parser). A minor bump is a
+# review event: re-check each seam, then move the ceiling.
 # The floor is 1.15.6, the first release where the executor's
 # ask_for_human_input compat property is back (a 1.14.5 regression crashed
 # human_input; see the fork note in README).
 dependencies = [
     "crewai>=1.15.6,<1.16",
-    "textual>=0.60",
+    # 6.0 is the floor that actually holds: FeedbackArea passes `placeholder=`
+    # to TextArea, which gained that argument in textual 6.0 (absent in 0.60 /
+    # 5.x). Below it, compose() raises TypeError and the app never renders.
+    "textual>=6.0",
     # Process-tree teardown for the break-glass quit (Ctrl+Q): a running
     # kickoff cannot be cancelled, so the panic key kills the run's child
     # subprocesses before hard-exiting, rather than orphaning them. Cross-
@@ -75,6 +80,7 @@ dev = [
     "pytest-cov>=5",
     "diff-cover>=9",  # per-PR coverage ratchet: 100% on the lines a PR touches
     "pytest-asyncio>=0.23",  # drives the textual.pilot harness for the App tests
+    "pytest-timeout>=2.3",  # backstop: a wedged gate/worker fails fast, never hangs CI
     "mypy>=1.11",
     "types-psutil",  # stubs for the psutil runtime dep, so strict mypy stays green
     "pylint>=3.2",
@@ -129,6 +135,10 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# Backstop for the worker-thread gate tests: a wedged _feedback_event.wait()
+# (or any hung worker) fails the test at the cap instead of hanging the job to
+# the CI wall-clock limit. Individual joins still assert the worker finished.
+timeout = 60
 # Coverage flags are deliberately NOT in addopts. The sdist ships this suite so
 # a downstream packager can verify the build they are shipping with plain
 # pytest; the gate lives in the CI invocation instead (see tests.yml).

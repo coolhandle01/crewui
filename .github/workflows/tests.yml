@@ -35,7 +35,7 @@ jobs:
       # line coverage calls a half-tested `if` fully covered. Spelled out here
       # rather than in addopts so the sdist's suite stays runnable with plain
       # pytest - see the comment in pyproject. The xml report feeds diff-cover.
-      - run: pytest --cov=crewui --cov-branch --cov-report=term-missing --cov-report=xml --cov-fail-under=95
+      - run: pytest --cov=crewui --cov-branch --cov-report=term-missing --cov-report=xml --cov-fail-under=98
       # Per-PR ratchet: every line this PR adds or changes must be covered
       # (100% on the diff), on top of the absolute floor above - the floor
       # catches a collapse, this catches slow drift on touched lines. One python
