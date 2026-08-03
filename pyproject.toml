@@ -75,6 +75,7 @@ dev = [
     "pytest-cov>=5",
     "diff-cover>=9",  # per-PR coverage ratchet: 100% on the lines a PR touches
     "pytest-asyncio>=0.23",  # drives the textual.pilot harness for the App tests
+    "pytest-timeout>=2.3",  # backstop: a wedged gate/worker fails fast, never hangs CI
     "mypy>=1.11",
     "types-psutil",  # stubs for the psutil runtime dep, so strict mypy stays green
     "pylint>=3.2",
@@ -129,6 +130,10 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# Backstop for the worker-thread gate tests: a wedged _feedback_event.wait()
+# (or any hung worker) fails the test at the cap instead of hanging the job to
+# the CI wall-clock limit. Individual joins still assert the worker finished.
+timeout = 60
 # Coverage flags are deliberately NOT in addopts. The sdist ships this suite so
 # a downstream packager can verify the build they are shipping with plain
 # pytest; the gate lives in the CI invocation instead (see tests.yml).

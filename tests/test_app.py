@@ -272,7 +272,7 @@ class TestHumanReview:
             def ask() -> None:
                 captured.append(app._await_feedback())
 
-            worker = threading.Thread(target=ask)
+            worker = threading.Thread(target=ask, daemon=True)
             worker.start()
             # The gate opens on the UI thread; wait for the input to enable.
             inp = app.query_one("#human-input", FeedbackArea)
@@ -281,6 +281,7 @@ class TestHumanReview:
             await pilot.press(*"tighten it")
             await pilot.press("enter")
             worker.join(timeout=2)
+            assert not worker.is_alive()  # a wedged worker fails here, never hangs the suite
             assert captured == ["tighten it"]
             # The gate closes again after submission, cleared for the next round.
             assert inp.disabled
@@ -318,7 +319,7 @@ class TestHumanReview:
             def ask() -> None:
                 captured.append(app._await_feedback())
 
-            worker = threading.Thread(target=ask)
+            worker = threading.Thread(target=ask, daemon=True)
             worker.start()
             inp = app.query_one("#human-input", FeedbackArea)
             assert await _wait_for(pilot, lambda: not inp.disabled)
@@ -326,6 +327,7 @@ class TestHumanReview:
             # Enter on an empty box means "accept" - an empty value comes back.
             await pilot.press("enter")
             worker.join(timeout=2)
+            assert not worker.is_alive()  # a wedged worker fails here, never hangs the suite
             assert captured == [""]
             assert inp.disabled
 
@@ -337,7 +339,7 @@ class TestHumanReview:
             def ask() -> None:
                 captured.append(app._await_feedback())
 
-            worker = threading.Thread(target=ask)
+            worker = threading.Thread(target=ask, daemon=True)
             worker.start()
             inp = app.query_one("#human-input", FeedbackArea)
             assert await _wait_for(pilot, lambda: not inp.disabled)
@@ -353,6 +355,7 @@ class TestHumanReview:
             # Enter now submits the whole multi-line value.
             await pilot.press("enter")
             worker.join(timeout=2)
+            assert not worker.is_alive()  # a wedged worker fails here, never hangs the suite
             assert captured == ["line one\nline two"]
             assert inp.disabled
 
@@ -366,7 +369,7 @@ class TestHumanReview:
             def ask() -> None:
                 captured.append(app._await_feedback())
 
-            worker = threading.Thread(target=ask)
+            worker = threading.Thread(target=ask, daemon=True)
             worker.start()
             inp = app.query_one("#human-input", FeedbackArea)
             assert await _wait_for(pilot, lambda: not inp.disabled)
@@ -382,6 +385,7 @@ class TestHumanReview:
             # Clean up the parked worker so it does not outlive the test.
             await pilot.press("enter")
             worker.join(timeout=2)
+            assert not worker.is_alive()  # a wedged worker fails here, never hangs the suite
 
     async def test_open_gate_without_agent_session_still_enables_input(
         self, make_crew: MakeCrew
@@ -446,7 +450,7 @@ class TestHumanReview:
             def drive() -> None:
                 provider.handle_feedback(_Answer("original"), ctx)
 
-            worker = threading.Thread(target=drive)
+            worker = threading.Thread(target=drive, daemon=True)
             worker.start()
             inp = app.query_one("#human-input", FeedbackArea)
             assert await _wait_for(pilot, lambda: not inp.disabled)
@@ -459,6 +463,7 @@ class TestHumanReview:
             inp.focus()
             await pilot.press("enter")
             worker.join(timeout=5)
+            assert not worker.is_alive()  # a wedged worker fails here, never hangs the suite
 
             assert ctx.invoke_count == 1
             assert any("basecamp" in m["content"] for m in ctx.messages)
@@ -528,7 +533,7 @@ class TestAgentSession:
             def ask() -> None:
                 captured.append(app._await_feedback())
 
-            worker = threading.Thread(target=ask)
+            worker = threading.Thread(target=ask, daemon=True)
             worker.start()
             inp = app.query_one("#human-input", FeedbackArea)
             assert await _wait_for(pilot, lambda: not inp.disabled)
@@ -536,6 +541,7 @@ class TestAgentSession:
             await pilot.press(*"pick basecamp")
             await pilot.press("enter")
             worker.join(timeout=2)
+            assert not worker.is_alive()  # a wedged worker fails here, never hangs the suite
             await pilot.pause(0.05)
             you = list(app.query(".you-box").results(Static))
             assert len(you) == 1
@@ -550,13 +556,14 @@ class TestAgentSession:
             def ask() -> None:
                 captured.append(app._await_feedback())
 
-            worker = threading.Thread(target=ask)
+            worker = threading.Thread(target=ask, daemon=True)
             worker.start()
             inp = app.query_one("#human-input", FeedbackArea)
             assert await _wait_for(pilot, lambda: not inp.disabled)
             inp.focus()
             await pilot.press("enter")  # empty submit = accept as-is
             worker.join(timeout=2)
+            assert not worker.is_alive()  # a wedged worker fails here, never hangs the suite
             await pilot.pause(0.05)
             # An empty accept still reads as a "you" turn - labelled "Accepted".
             you = list(app.query(".you-box").results(Static))
@@ -1024,10 +1031,13 @@ class TestLogHandler:
                 logging.getLogger("myapp.worker").warning("agent line")
                 logging.getLogger("urllib3").warning("crew line")
 
-            worker = threading.Thread(target=emit)
+            worker = threading.Thread(target=emit, daemon=True)
             worker.start()
+            # emit() parks on a blocking call_from_thread until the event loop
+            # pumps, so it finishes during the pause below, not the join.
             worker.join(timeout=2)
             await pilot.pause(0.1)
+            assert not worker.is_alive()  # a wedged worker fails here, never hangs the suite
             assert any(
                 "agent line" in str(box.render())
                 for box in app.query(".agent-text").results(Static)
