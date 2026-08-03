@@ -259,6 +259,19 @@ class TestRun:
             await _wait_for(pilot, lambda: "task0" in order)
             assert order[0] == "start"
 
+    async def test_pipeline_running_is_set_before_on_start(self, make_crew: MakeCrew) -> None:
+        # Ctrl+Q during on_start (arbitrary host code) must take the break-glass
+        # path, so the in-flight flag has to be set before on_start runs.
+        seen: list[bool] = []
+
+        def on_start() -> None:
+            seen.append(app._pipeline_running)
+
+        app = CrewAIPipelineTUI(crew=make_crew(), on_start=on_start)
+        async with app.run_test() as pilot:
+            assert await _wait_for(pilot, lambda: bool(seen))
+            assert seen == [True]
+
     async def test_on_complete_failure_is_swallowed(self, make_crew: MakeCrew) -> None:
         def boom(_result: object) -> None:
             raise ValueError("cannot save")

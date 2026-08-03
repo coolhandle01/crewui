@@ -151,6 +151,11 @@ def format_tool_title(tool_name: str, tool_args: object) -> str:
     return f"> {tool_name}({truncate(shown, 80)})"
 
 
+# Above this size, skip the JSON pretty-print in format_tool_output: the result
+# is clipped to 4000 chars anyway, so parsing a larger blob is wasted work.
+_JSON_PRETTY_LIMIT = 100_000
+
+
 def format_tool_output(output: object) -> str:
     """A tool's result, ready for a collapsible body: JSON pretty-printed, other
     text passed through, everything clipped so one giant blob cannot run away.
@@ -160,6 +165,12 @@ def format_tool_output(output: object) -> str:
     prose, a bare number) is left as its ``str()``.
     """
     text = str(output)
-    with contextlib.suppress(json.JSONDecodeError, ValueError, TypeError):
-        text = json.dumps(json.loads(text), indent=2)
+    # Only attempt the pretty-print on reasonably sized output: json.loads +
+    # dumps runs on the *whole* blob before the 4000-char clip, so a 20MB tool
+    # result would stall the event loop and allocate ~2x just to show 4KB. Above
+    # the limit, skip straight to the clip. (JSONDecodeError is a ValueError, so
+    # ValueError alone covers a non-JSON string.)
+    if len(text) <= _JSON_PRETTY_LIMIT:
+        with contextlib.suppress(ValueError, TypeError):
+            text = json.dumps(json.loads(text), indent=2)
     return truncate(text, 4000) or "(no output)"

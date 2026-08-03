@@ -282,6 +282,12 @@ class CrewAIPipelineTUI(App[None]):
     def _start_run(self) -> None:
         from crewai.core.providers.human_input import reset_provider, set_provider
 
+        # Mark the run in flight first: on_start (arbitrary host code) and the
+        # initial call_from_thread below run before kickoff, and Ctrl+Q in that
+        # window must take the break-glass hard-teardown, not the graceful path
+        # (which would hang on the uncancellable run once it starts).
+        self._pipeline_running = True
+
         if self._on_start is not None:
             self._on_start()
 
@@ -295,7 +301,6 @@ class CrewAIPipelineTUI(App[None]):
         # a blocking terminal input(). Set in this (worker) thread so kickoff's
         # get_provider() - same thread - picks it up; reset when the run ends.
         token = set_provider(_make_tui_human_input_provider(self))
-        self._pipeline_running = True
         # Render tool calls in the agent session. CrewAI emits these around every
         # tool execution regardless of LLM provider - unlike the ReAct step
         # callback, which the native tool-calling path never fires. Registered

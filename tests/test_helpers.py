@@ -249,3 +249,11 @@ class TestFormatToolOutput:
 
     def test_clips_a_giant_result(self) -> None:
         assert len(format_tool_output("x" * 9000)) == 4000
+
+    def test_huge_output_skips_the_json_pretty_print(self) -> None:
+        # A blob past the pretty-print limit must not be json-parsed (the result
+        # is clipped to 4000 anyway) - returned truncated raw, not indented.
+        huge = '{"k": "' + "x" * 200_000 + '"}'
+        out = format_tool_output(huge)
+        assert out.startswith('{"k": "')  # raw, not the indented '{\n  "k"'
+        assert len(out) == 4000
