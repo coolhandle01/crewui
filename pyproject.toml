@@ -60,7 +60,10 @@ classifiers = [
 # human_input; see the fork note in README).
 dependencies = [
     "crewai>=1.15.6,<1.16",
-    "textual>=0.60",
+    # 6.0 is the floor that actually holds: FeedbackArea passes `placeholder=`
+    # to TextArea, which gained that argument in textual 6.0 (absent in 0.60 /
+    # 5.x). Below it, compose() raises TypeError and the app never renders.
+    "textual>=6.0",
     # Process-tree teardown for the break-glass quit (Ctrl+Q): a running
     # kickoff cannot be cancelled, so the panic key kills the run's child
     # subprocesses before hard-exiting, rather than orphaning them. Cross-
