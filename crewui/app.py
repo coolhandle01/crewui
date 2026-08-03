@@ -797,7 +797,7 @@ class CrewAIPipelineTUI(App[None]):
         then returns what they typed. Empty (just Enter) means "accept", per
         CrewAI's feedback loop.
         """
-        self._feedback_event = threading.Event()
+        gate = self._feedback_event = threading.Event()
         self._feedback_value = ""
         self.call_from_thread(self._open_feedback_gate)
         # Poll rather than park forever: if the app tears down while the gate is
@@ -805,7 +805,11 @@ class CrewAIPipelineTUI(App[None]):
         # hanging the worker on wait(), which would wedge teardown on the
         # default-executor join for up to 300s. The is_running check releases the
         # worker within one poll interval of any such exit.
-        while not self._feedback_event.wait(0.25):
+        #
+        # Wait on the local `gate`, not self._feedback_event: the submit handler
+        # nulls self._feedback_event as it claims the gate, so re-reading it here
+        # would race into a None.wait(). The handler sets this same object.
+        while not gate.wait(0.25):
             if not self.is_running:
                 return ""
         return self._feedback_value
