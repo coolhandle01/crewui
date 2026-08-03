@@ -926,6 +926,45 @@ class TestToolCalls:
                 ),
             )
 
+    async def test_tool_event_on_the_bus_renders_a_box_end_to_end(
+        self, make_crew: MakeCrew
+    ) -> None:
+        # End to end through the real seam: _start_run must actually register the
+        # handlers on the bus, so a ToolUsageStartedEvent emitted the way a live
+        # run emits it renders a tool-call box. The other tests call the render
+        # methods directly and so would pass even if the bus wiring were dead;
+        # this one fails if register_handler is not called.
+        from crewai.events import ToolUsageStartedEvent, crewai_event_bus
+
+        release = threading.Event()
+        crew = make_crew(block_until=release)
+        app = CrewAIPipelineTUI(crew=crew)  # non-dry: _start_run wires the bus
+        try:
+            async with app.run_test() as pilot:
+                # Wait until _start_run has actually registered the handler on the
+                # bus (it does so just after opening the first turn box), then
+                # emit the way a live run does.
+                assert await _wait_for(
+                    pilot,
+                    lambda: (
+                        app._on_tool_started
+                        in crewai_event_bus._sync_handlers.get(ToolUsageStartedEvent, frozenset())
+                    ),
+                )
+                crewai_event_bus.emit(
+                    crew,
+                    ToolUsageStartedEvent(tool_name="search_web", tool_args={"q": "lisbon"}),
+                )
+                assert await _wait_for(
+                    pilot,
+                    lambda: any(
+                        "search_web" in str(box.title)
+                        for box in app.query(".tool-call").results(Collapsible)
+                    ),
+                )
+        finally:
+            release.set()
+
 
 class TestReasoning:
     """The agent's extended thinking streams into a collapsed reasoning box at
