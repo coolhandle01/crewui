@@ -958,17 +958,26 @@ class TestToolCalls:
     async def test_a_run_deregisters_its_tool_handlers(self, make_crew: MakeCrew) -> None:
         # The bus is a global singleton; a finished run must leave no handler
         # bound to the (now-idle) app, or a later crew would drive a dead UI.
+        # Assert the handler is registered while the run is in flight, THEN gone
+        # once it ends: a bare "not registered" check is also true before
+        # registration, so it would pass even if the run never wired the bus.
         from crewai.events import ToolUsageStartedEvent, crewai_event_bus
 
-        app = CrewAIPipelineTUI(crew=make_crew())
-        async with app.run_test() as pilot:
-            assert await _wait_for(
-                pilot,
-                lambda: (
-                    app._on_tool_started
-                    not in crewai_event_bus._sync_handlers.get(ToolUsageStartedEvent, frozenset())
-                ),
+        release = threading.Event()
+        app = CrewAIPipelineTUI(crew=make_crew(block_until=release))
+
+        def registered() -> bool:
+            return app._on_tool_started in crewai_event_bus._sync_handlers.get(
+                ToolUsageStartedEvent, frozenset()
             )
+
+        try:
+            async with app.run_test() as pilot:
+                assert await _wait_for(pilot, registered)  # wired while in flight
+                release.set()
+                assert await _wait_for(pilot, lambda: not registered())  # gone after
+        finally:
+            release.set()
 
     async def test_tool_event_on_the_bus_renders_a_box_end_to_end(
         self, make_crew: MakeCrew
@@ -1112,18 +1121,26 @@ class TestReasoning:
             assert not app.query(".reasoning-box")
 
     async def test_a_run_deregisters_its_thinking_handler(self, make_crew: MakeCrew) -> None:
+        # Registered in flight, then gone - see the tool-handler test for why the
+        # bare "not registered" check would pass vacuously.
         from crewai.events import crewai_event_bus
         from crewai.events.types.llm_events import LLMThinkingChunkEvent
 
-        app = CrewAIPipelineTUI(crew=make_crew())
-        async with app.run_test() as pilot:
-            assert await _wait_for(
-                pilot,
-                lambda: (
-                    app._on_thinking_chunk
-                    not in crewai_event_bus._sync_handlers.get(LLMThinkingChunkEvent, frozenset())
-                ),
+        release = threading.Event()
+        app = CrewAIPipelineTUI(crew=make_crew(block_until=release))
+
+        def registered() -> bool:
+            return app._on_thinking_chunk in crewai_event_bus._sync_handlers.get(
+                LLMThinkingChunkEvent, frozenset()
             )
+
+        try:
+            async with app.run_test() as pilot:
+                assert await _wait_for(pilot, registered)
+                release.set()
+                assert await _wait_for(pilot, lambda: not registered())
+        finally:
+            release.set()
 
 
 class TestLogHandler:
