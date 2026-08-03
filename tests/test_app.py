@@ -1108,6 +1108,35 @@ class TestReasoning:
             await pilot.pause(0.05)
             assert not app.query(".reasoning-box")
 
+    async def test_bus_handler_dispatches_without_blocking_render(
+        self, make_crew: MakeCrew
+    ) -> None:
+        # The streaming handler must not render synchronously on the calling
+        # (LLM worker) thread - it posts a message so the producer is never
+        # blocked per token. So nothing renders until the message pump runs.
+        app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
+        async with app.run_test() as pilot:
+            app._open_agent_turn(0)
+            await pilot.pause(0.05)
+            app._on_thinking_chunk(None, SimpleNamespace(chunk="deferred"))
+            assert not app.query(".reasoning-box")  # queued, not rendered inline
+            await pilot.pause(0.05)
+            assert "deferred" in str(app.query_one(".reasoning-out", Static).render())
+
+    async def test_reasoning_buffer_is_capped(self, make_crew: MakeCrew) -> None:
+        # A long reasoning stream must not grow the buffer (or the re-render cost)
+        # without bound: it is capped like format_tool_output, keeping the head
+        # and marking the truncation.
+        app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
+        async with app.run_test() as pilot:
+            app._open_agent_turn(0)
+            for _ in range(60):
+                app._thinking_chunk_ui("x" * 200)  # 12000 chars total
+            await pilot.pause(0.02)
+            rendered = str(app.query_one(".reasoning-out", Static).render())
+            assert len(rendered) <= 4100  # bounded near the 4000 cap, not 12000
+            assert "…" in rendered  # truncation marked
+
     async def test_a_tool_ends_the_thinking_run(self, make_crew: MakeCrew) -> None:
         # Think, tool, think again -> two reasoning boxes, the tool between them,
         # not the second thought merged into the first box.

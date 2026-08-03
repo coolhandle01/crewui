@@ -103,6 +103,21 @@ class FeedbackArea(TextArea):
         await super()._on_key(event)
 
 
+# Bounds the reasoning buffer (and thus each re-render), matching
+# format_tool_output's cap - a streaming provider can emit unbounded thinking.
+_REASONING_CAP = 4000
+
+
+class ReasoningChunk(Message):
+    """A chunk of streamed agent reasoning, handed from the LLM worker thread to
+    the UI thread. Posted (not call_from_thread'd) so the producer is never
+    blocked per token waiting on a UI round-trip."""
+
+    def __init__(self, chunk: str) -> None:
+        self.chunk = chunk
+        super().__init__()
+
+
 class CrewAIPipelineTUI(App[None]):
     # The class owns the default theme. Absolute (not the bare "default.tcss")
     # because Textual resolves a relative CSS_PATH against the *concrete*
@@ -160,7 +175,7 @@ class CrewAIPipelineTUI(App[None]):
         # chunk opens a fresh box); it closes when anything else joins the turn
         # (a tool, the answer, a new turn) so a later thinking run gets its own.
         self._reasoning_body: Static | None = None
-        self._reasoning_lines: list[str] = []
+        self._reasoning_text: str = ""
         # Per-turn token spend: each agent holds a live token accumulator that
         # crewai's LLM callback ticks up as a task runs, cumulative across that
         # agent's turns. We snapshot it (keyed by agent id) at each task
@@ -720,15 +735,24 @@ class CrewAIPipelineTUI(App[None]):
             self.query_one("#agent-session", VerticalScroll).scroll_end(animate=False)
 
     def _on_thinking_chunk(self, _source: object, event: object) -> None:
-        """Bus handler (worker thread): a chunk of the agent's thinking."""
+        """Bus handler (worker thread): a chunk of the agent's thinking. Posted
+        as a message rather than dispatched inline, so a token-level streaming
+        provider never blocks its LLM thread on a per-chunk UI round-trip."""
         chunk = str(getattr(event, "chunk", ""))
         if chunk:
-            self._on_ui(self._thinking_chunk_ui, chunk)
+            self.post_message(ReasoningChunk(chunk))
+
+    def on_reasoning_chunk(self, message: ReasoningChunk) -> None:
+        self._thinking_chunk_ui(message.chunk)
 
     def _thinking_chunk_ui(self, chunk: str) -> None:
         """Stream a thinking chunk into the turn's reasoning box, opening a
         collapsed one on the first chunk. Folded away by default - reasoning is
-        long and secondary; expand it to read how the agent got there."""
+        long and secondary; expand it to read how the agent got there.
+
+        The buffer is a single capped string, not a growing list re-joined every
+        chunk: appending to a bounded string keeps each update O(cap) rather than
+        O(total), so a long stream stays O(n) over the turn instead of O(n^2)."""
         if self._turn_box is None:
             self._open_agent_turn(self._current_task_idx)
         if self._turn_box is None:  # session not mounted - nothing to mount into
@@ -736,13 +760,18 @@ class CrewAIPipelineTUI(App[None]):
         body = self._reasoning_body
         if body is None:
             body = Static("", classes="reasoning-out", markup=False)
-            self._reasoning_lines = []
+            self._reasoning_text = ""
             self._turn_box.mount(
                 Collapsible(body, title="reasoning", collapsed=True, classes="reasoning-box")
             )
             self._reasoning_body = body
-        self._reasoning_lines.append(chunk)
-        body.update("".join(self._reasoning_lines))
+        if len(self._reasoning_text) > _REASONING_CAP:
+            return  # already capped (marked): stop growing and skip the re-render
+        combined = self._reasoning_text + chunk
+        if len(combined) > _REASONING_CAP:
+            combined = combined[:_REASONING_CAP] + " …"
+        self._reasoning_text = combined
+        body.update(combined)
         with contextlib.suppress(NoMatches):
             self.query_one("#agent-session", VerticalScroll).scroll_end(animate=False)
 
