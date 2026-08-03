@@ -412,8 +412,6 @@ class CrewAIPipelineTUI(App[None]):
         cumulative, so the turn's own spend is a diff against the previous
         snapshot. A no-op when the box is gone or the agent exposes no usage
         (subtitle stays blank)."""
-        if self._turn_box is None:
-            return
         try:
             agent = self._crew.tasks[idx].agent
         except (IndexError, AttributeError):
@@ -421,6 +419,10 @@ class CrewAIPipelineTUI(App[None]):
         snapshot = self._agent_usage_snapshot(agent)
         if snapshot is None:
             return
+        # Store the snapshot *unconditionally*, before the turn-box guard: a
+        # human-review gate clears _turn_box (via _mount_note), so gating the
+        # snapshot on it would drop that turn's tokens and leak them into the
+        # next turn's delta. Only the subtitle render below needs the box.
         now, key = snapshot
         prev = self._usage_snapshots.get(key, (0, 0, 0))
         self._usage_snapshots[key] = now
@@ -441,7 +443,8 @@ class CrewAIPipelineTUI(App[None]):
         parts = [f"↑{compact_tokens(inp)}", f"↓{compact_tokens(out)}"]
         if cached:
             parts.append(f"↻{compact_tokens(cached)}")
-        self._turn_box.border_subtitle = " · ".join(parts)
+        if self._turn_box is not None:
+            self._turn_box.border_subtitle = " · ".join(parts)
 
     def _make_step_callback(self) -> Callable[[object], None]:
         def _cb(step: object) -> None:
@@ -890,11 +893,13 @@ class CrewAIPipelineTUI(App[None]):
         # worker, so a raise while echoing or clearing the box (e.g. query_one)
         # must not strand it on wait() forever.
         try:
-            self._feedback_value = event.value
+            # Strip so a whitespace-only submit reads as "accept" to CrewAI too,
+            # not as real feedback - otherwise the box echoes "Accepted" while
+            # CrewAI runs another review round on the blank text.
+            self._feedback_value = event.value.strip()
             # Echo the operator's turn so every round is visible: feedback
             # verbatim, or "Accepted" when they submit empty (accept as-is).
-            feedback = event.value.strip()
-            self._mount_note("you-box", "you", feedback or "Accepted")
+            self._mount_note("you-box", "you", self._feedback_value or "Accepted")
             inp = self.query_one("#human-input", FeedbackArea)
             inp.text = ""
             inp.disabled = True

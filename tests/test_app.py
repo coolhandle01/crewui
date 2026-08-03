@@ -402,6 +402,30 @@ class TestHumanReview:
             assert captured == [""]
             assert inp.disabled
 
+    async def test_whitespace_only_feedback_strips_to_accept(self, make_crew: MakeCrew) -> None:
+        # Ctrl+J then Enter submits a newline-only value. It must strip to "" so
+        # CrewAI reads it as "accept", not as real feedback that triggers another
+        # review round while the box has already echoed "Accepted".
+        app = CrewAIPipelineTUI(crew=make_crew())
+        async with app.run_test() as pilot:
+            captured: list[str] = []
+
+            def ask() -> None:
+                captured.append(app._await_feedback())
+
+            worker = threading.Thread(target=ask, daemon=True)
+            worker.start()
+            inp = app.query_one("#human-input", FeedbackArea)
+            assert await _wait_for(pilot, lambda: not inp.disabled)
+            inp.focus()
+            await pilot.press("ctrl+j")  # inserts a newline, does not submit
+            await pilot.press("enter")  # submits "\n"
+            worker.join(timeout=2)
+            assert not worker.is_alive()
+            assert captured == [""]  # stripped to accept
+            you = list(app.query(".you-box").results(Static))
+            assert "Accepted" in str(you[-1].render())
+
     async def test_ctrl_j_inserts_newline_and_full_value_submits(self, make_crew: MakeCrew) -> None:
         app = CrewAIPipelineTUI(crew=make_crew())
         async with app.run_test() as pilot:
@@ -730,15 +754,30 @@ class TestAgentSession:
             assert app._turn_box is not None
             assert not app._turn_box.border_subtitle
 
-    async def test_usage_with_no_open_turn_box_is_a_noop(self, make_crew: MakeCrew) -> None:
-        app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
+    async def test_usage_with_no_open_turn_box_still_snapshots(
+        self, make_crew: MakeCrew
+    ) -> None:
+        # A human-review gate clears _turn_box; the turn's tokens must still be
+        # snapshotted (no box to stamp a subtitle on), or they leak into the next
+        # turn's delta. Here: record with no box, then a later turn shows only
+        # its own delta, not the tokens spent while the box was gone.
+        crew = make_crew()
+        app = CrewAIPipelineTUI(crew=crew, dry_run=True)
         async with app.run_test() as pilot:
             await pilot.pause(0.05)
-            # No agent turn is open (e.g. a stray callback after the session
-            # closed one) - there is nothing to stamp, so it must simply return.
             assert app._turn_box is None
+            proc = crew.tasks[0].agent._token_process
+            proc.sum_prompt_tokens(1000)
+            proc.sum_completion_tokens(200)
             app._apply_turn_usage(0)
-            assert app._turn_box is None
+            assert app._turn_box is None  # no crash, no box created
+            assert app._usage_snapshots  # but the snapshot was stored
+            app._open_agent_turn(0)
+            proc.sum_prompt_tokens(50)
+            proc.sum_completion_tokens(10)
+            app._apply_turn_usage(0)
+            assert app._turn_box is not None
+            assert app._turn_box.border_subtitle == "↑50 · ↓10"
 
     async def test_native_provider_usage_read_off_the_llm_instance(
         self, make_crew: MakeCrew
