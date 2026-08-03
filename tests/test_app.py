@@ -334,6 +334,27 @@ class TestHumanReview:
             assert app._feedback_value == "first"  # not overwritten
             assert len(app.query(".you-box")) == 1  # not echoed twice
 
+    async def test_gate_open_at_teardown_releases_the_worker(self, make_crew: MakeCrew) -> None:
+        # Any exit that is not a submit - app.exit(), an unhandled UI error, or a
+        # pilot ending with the gate open - must release the parked worker, not
+        # leave it on _feedback_event.wait() forever (which wedges teardown on
+        # the executor join). The worker returns "accept as-is".
+        app = CrewAIPipelineTUI(crew=make_crew())
+        captured: list[str] = []
+
+        def ask() -> None:
+            captured.append(app._await_feedback())
+
+        worker = threading.Thread(target=ask, daemon=True)
+        async with app.run_test() as pilot:
+            worker.start()
+            inp = app.query_one("#human-input", FeedbackArea)
+            assert await _wait_for(pilot, lambda: not inp.disabled)  # gate is open
+        # The context has exited: the app unmounted with the gate still open.
+        worker.join(timeout=2)
+        assert not worker.is_alive()  # released, not hung
+        assert captured == [""]
+
     async def test_empty_submit_accepts_the_result_as_is(self, make_crew: MakeCrew) -> None:
         app = CrewAIPipelineTUI(crew=make_crew())
         async with app.run_test() as pilot:

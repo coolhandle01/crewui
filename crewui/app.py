@@ -800,7 +800,14 @@ class CrewAIPipelineTUI(App[None]):
         self._feedback_event = threading.Event()
         self._feedback_value = ""
         self.call_from_thread(self._open_feedback_gate)
-        self._feedback_event.wait()
+        # Poll rather than park forever: if the app tears down while the gate is
+        # open - any exit that is not a submit - bail with "accept" instead of
+        # hanging the worker on wait(), which would wedge teardown on the
+        # default-executor join for up to 300s. The is_running check releases the
+        # worker within one poll interval of any such exit.
+        while not self._feedback_event.wait(0.25):
+            if not self.is_running:
+                return ""
         return self._feedback_value
 
     def _open_feedback_gate(self) -> None:
@@ -829,16 +836,21 @@ class CrewAIPipelineTUI(App[None]):
         gate, self._feedback_event = self._feedback_event, None
         if gate is None:
             return
-        self._feedback_value = event.value
-        # Echo the operator's turn into the session so every round is visible:
-        # feedback verbatim, or "Accepted" when they submit empty (accept as-is).
-        feedback = event.value.strip()
-        self._mount_note("you-box", "you", feedback or "Accepted")
-        inp = self.query_one("#human-input", FeedbackArea)
-        inp.text = ""
-        inp.disabled = True
-        inp.placeholder = "Human review (idle)"
-        gate.set()
+        # Set the event in a finally: it is the only wakeup for the parked
+        # worker, so a raise while echoing or clearing the box (e.g. query_one)
+        # must not strand it on wait() forever.
+        try:
+            self._feedback_value = event.value
+            # Echo the operator's turn so every round is visible: feedback
+            # verbatim, or "Accepted" when they submit empty (accept as-is).
+            feedback = event.value.strip()
+            self._mount_note("you-box", "you", feedback or "Accepted")
+            inp = self.query_one("#human-input", FeedbackArea)
+            inp.text = ""
+            inp.disabled = True
+            inp.placeholder = "Human review (idle)"
+        finally:
+            gate.set()
 
 
 def _make_tui_human_input_provider(app: CrewAIPipelineTUI) -> SyncHumanInputProvider:
