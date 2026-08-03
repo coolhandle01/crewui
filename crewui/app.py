@@ -297,6 +297,9 @@ class CrewAIPipelineTUI(App[None]):
             crewai_event_bus.off(ToolUsageFinishedEvent, self._on_tool_finished)
             crewai_event_bus.off(ToolUsageErrorEvent, self._on_tool_error)
             crewai_event_bus.off(LLMThinkingChunkEvent, self._on_thinking_chunk)
+            # Drop any tool boxes left pending by an aborted run so a second run
+            # in the same process starts clean.
+            self._pending_tools.clear()
 
     def _make_task_callback(
         self, idx: int, orig: Callable[..., None] | None
@@ -515,6 +518,11 @@ class CrewAIPipelineTUI(App[None]):
         self._turn_box = None
         self._turn_text = None
         self._reasoning_body = None
+        # Tool boxes are turn-scoped: any tool still pending from the previous
+        # turn (a Started with no Finished - a crash or timeout) will never be
+        # filled now, and leaving it keyed would let this turn's retry of the
+        # same (name, args) fill the stale box instead of its own.
+        self._pending_tools.clear()
         try:
             session = self.query_one("#agent-session", VerticalScroll)
         except NoMatches:
@@ -679,10 +687,13 @@ class CrewAIPipelineTUI(App[None]):
         """Fill the matching in-flight tool box with its output and stamp the
         header. Matched by (name, args) so parallel calls each fill their own box;
         a no-op if nothing is pending for that key (a stray or duplicate finish)."""
-        waiting = self._pending_tools.get(self._tool_key(name, args))
+        key = self._tool_key(name, args)
+        waiting = self._pending_tools.get(key)
         if not waiting:
             return
         coll, body = waiting.pop(0)
+        if not waiting:  # last one for this key - drop it so the dict stays clean
+            del self._pending_tools[key]
         body.update(format_tool_output(output))
         marker = " ✓" if ok else " ✗"
         if from_cache:

@@ -988,6 +988,29 @@ class TestToolCalls:
         finally:
             release.set()
 
+    async def test_retried_tool_in_next_turn_fills_its_own_box(
+        self, make_crew: MakeCrew
+    ) -> None:
+        # A tool started in one turn but never finished (a crash/timeout), then
+        # the same (name, args) retried in the next turn, must fill the NEW
+        # turn's box - not the stale box left pending in the previous turn - and
+        # must not leak a permanent pending entry.
+        app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
+        async with app.run_test() as pilot:
+            app._open_agent_turn(0)
+            app._tool_started_ui("recon", "x")  # turn 0: started, never finished
+            await pilot.pause(0.02)
+            app._open_agent_turn(1)
+            app._tool_started_ui("recon", "x")  # turn 1: the retry
+            app._tool_finished_ui("recon", "x", "found it", False, True)
+            await pilot.pause(0.02)
+            turns = list(app.query(".agent-turn").results(Vertical))
+            box_a = turns[0].query_one(".tool-call", Collapsible)
+            box_b = turns[1].query_one(".tool-call", Collapsible)
+            assert "✓" in str(box_b.title)  # the retry's own box is filled
+            assert "✓" not in str(box_a.title)  # the stale box stays running
+            assert app._tool_key("recon", "x") not in app._pending_tools  # no leak
+
 
 class TestReasoning:
     """The agent's extended thinking streams into a collapsed reasoning box at
