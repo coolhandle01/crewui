@@ -34,6 +34,7 @@ from crewai.events import (
 )
 from crewai.events.types.llm_events import LLMThinkingChunkEvent
 from rich.errors import MarkupError
+from rich.markup import escape
 from rich.rule import Rule as RichRule
 from rich.text import Text
 from textual import events, work
@@ -283,8 +284,12 @@ class CrewAIPipelineTUI(App[None]):
             result = self._crew.kickoff()
             self.call_from_thread(self._on_done, result)
         except Exception as exc:
-            self.call_from_thread(self._write_agent, f"[bold red]Pipeline error: {exc}[/bold red]")
-            self.call_from_thread(self._write_crew, f"[bold red]Pipeline error: {exc}[/bold red]")
+            # escape the exception text: it can carry brackets (a "[/path]" in
+            # the message) that would otherwise raise in the markup renderer and
+            # lose the error - keep the [bold red] framing, render exc literally.
+            err = f"[bold red]Pipeline error: {escape(str(exc))}[/bold red]"
+            self.call_from_thread(self._write_agent, err)
+            self.call_from_thread(self._write_crew, err)
         finally:
             self._pipeline_running = False
             reset_provider(token)
@@ -456,7 +461,7 @@ class CrewAIPipelineTUI(App[None]):
                 self._on_complete(result)
             except Exception as exc:
                 logger.debug("on_complete callback error: %s", exc)
-                self._write_crew(f"[yellow]Metrics error: {exc}[/yellow]")
+                self._write_crew(f"[yellow]Metrics error: {escape(str(exc))}[/yellow]")
 
         usage = getattr(result, "token_usage", None)
         if usage is None:
@@ -586,9 +591,17 @@ class CrewAIPipelineTUI(App[None]):
 
     def _write_crew(self, msg: str) -> None:
         try:
-            self.query_one("#crew-log", RichLog).write(msg)
+            log = self.query_one("#crew-log", RichLog)
         except NoMatches:
             logger.debug("crew-log widget not mounted, dropping message")
+            return
+        # #crew-log is markup=True, so stray markup in the message (an unescaped
+        # "[/path]" from a log record or an error) would raise. Fall back to a
+        # plain Text render, mirroring _write_agent, so no caller can crash it.
+        try:
+            log.write(msg)
+        except MarkupError:
+            log.write(Text(msg))
 
     def _on_ui(self, fn: Callable[..., None], *args: object) -> None:
         """Run a UI update from either the worker thread or the UI thread.
@@ -844,7 +857,10 @@ class _TUILogHandler(logging.Handler):
         self._app = app
 
     def emit(self, record: logging.LogRecord) -> None:
-        msg = self.format(record)
+        # A formatted log record is never intended as markup, and third-party
+        # libraries log bracketed paths / URLs freely - escape so a "[/path]"
+        # token renders literally instead of raising in the markup=True panes.
+        msg = escape(self.format(record))
         target = route_log_record(record.name, self._app._record_prefix)
         # A record can be emitted from the worker thread (during kickoff) or
         # from the UI thread (a widget callback that logs) - _ui_dispatch picks

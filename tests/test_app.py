@@ -39,6 +39,10 @@ def _metrics(app: CrewAIPipelineTUI) -> str:
     return str(app.query_one("#metrics", Static).content)
 
 
+def _crew_log_text(app: CrewAIPipelineTUI) -> str:
+    return "\n".join(strip.text for strip in app.query_one("#crew-log", RichLog).lines)
+
+
 async def _wait_for(pilot: object, predicate: Callable[[], bool], ticks: int = 60) -> bool:
     """Pump the event loop until ``predicate`` holds or ``ticks`` elapse.
 
@@ -255,6 +259,25 @@ class TestErrorPath:
             # The run raised inside kickoff; the UI stays up and the sidebar
             # never advances past the first task.
             assert _statuses(app)[0] == "Running..."
+
+    async def test_kickoff_error_with_bracketed_message_reaches_both_panes(
+        self, make_crew: MakeCrew
+    ) -> None:
+        # The crew-error path writes the exception to both the agent pane and the
+        # crew log. A bracketed path in the message must not MarkupError out of
+        # either write - previously the agent-pane write raised and the crew-log
+        # copy was silently lost. Both panes show the error, path intact.
+        crew = make_crew(raise_on_kickoff=True, raise_message="could not read [/etc/hosts]")
+        app = CrewAIPipelineTUI(crew=crew)
+        async with app.run_test() as pilot:
+            assert await _wait_for(
+                pilot,
+                lambda: any(
+                    "/etc/hosts" in str(box.render())
+                    for box in app.query(".agent-text").results(Static)
+                ),
+            )
+            assert "/etc/hosts" in _crew_log_text(app)
 
 
 class TestHumanReview:
@@ -1083,6 +1106,25 @@ class TestLogHandler:
             )
             assert len(app.query_one("#crew-log", RichLog).lines) >= 1
 
+    async def test_crew_routed_log_record_with_brackets_does_not_crash(
+        self, make_crew: MakeCrew
+    ) -> None:
+        # Third-party libraries log paths and URLs as ordinary text; a record
+        # routed to the crew pane (a markup=True RichLog) must not MarkupError on
+        # a bracketed token - it is not markup and should appear literally.
+        app = CrewAIPipelineTUI(crew=make_crew(), record_prefix="myapp", dry_run=True)
+        async with app.run_test() as pilot:
+
+            def emit() -> None:
+                logging.getLogger("httpx").warning("GET /x -> wrote [/var/log/app.log]")
+
+            worker = threading.Thread(target=emit, daemon=True)
+            worker.start()
+            worker.join(timeout=2)
+            await pilot.pause(0.1)
+            assert not worker.is_alive()
+            assert "/var/log/app.log" in _crew_log_text(app)
+
 
 class TestDefensiveBranches:
     """The write helpers and step callback are defensive: a missing widget or a
@@ -1102,6 +1144,16 @@ class TestDefensiveBranches:
             await pilot.pause(0.02)
             app._write_agent("nowhere")
             app._write_crew("nowhere")
+
+    async def test_write_crew_survives_unbalanced_markup(self, make_crew: MakeCrew) -> None:
+        # Mirror of _write_agent's defence: a caller handing _write_crew stray
+        # markup (an unescaped "[/path]") must fall back to plain text, not raise
+        # out of the crew-log write.
+        app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
+        async with app.run_test() as pilot:
+            app._write_crew("boom [/etc/hosts]")  # must not raise
+            await pilot.pause(0.05)
+            assert "/etc/hosts" in _crew_log_text(app)
 
     def test_step_callback_swallows_formatting_error(self, make_crew: MakeCrew) -> None:
         app = CrewAIPipelineTUI(crew=make_crew())
