@@ -91,6 +91,33 @@ class TestCompose:
             names = [str(lbl.render()) for lbl in app.query(".task-name").results(Label)]
             assert names == ["scout", "scribe"]
 
+    async def test_agent_less_task_does_not_misroute_sidebar_rows(
+        self, make_crew: MakeCrew
+    ) -> None:
+        # Sidebar rows exist only for agent-bearing tasks, but callbacks fire per
+        # crew-task index. Without a crew-index -> row-index map, running crew
+        # task C (index 2) would index the wrong row (or none) and running the
+        # agent-less task B (index 1) would mark C's row. Assert the map routes
+        # both correctly.
+        crew = make_crew(tasks=[FakeTask("A", "a"), FakeTask("B", "b"), FakeTask("C", "c")])
+        crew.tasks[1].agent = None  # type: ignore[assignment]
+        app = CrewAIPipelineTUI(crew=crew, dry_run=True)
+        async with app.run_test() as pilot:
+            await pilot.pause(0.05)
+            assert app._row_of_task == {0: 0, 2: 1}
+            c_name, c_status = app._task_widgets[1]  # C's row
+            # The agent-less crew task (index 1) must not touch C's row.
+            app._set_task_running(1)
+            await pilot.pause(0.02)
+            assert "running" not in c_name.classes
+            # Crew task C (index 2) marks C's row and titles the turn "c".
+            app._set_task_running(2)
+            await pilot.pause(0.02)
+            assert "running" in c_name.classes
+            assert str(c_status.render()) == "Running..."
+            assert app._turn_box is not None
+            assert app._turn_box.border_title == "c"
+
 
 class TestDryRun:
     async def test_dry_run_does_not_kickoff_and_shows_zeroed_metrics(

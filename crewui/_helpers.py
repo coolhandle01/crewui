@@ -50,25 +50,28 @@ def dispatch_on_ui_thread(current_thread_id: int, ui_thread_id: int | None) -> b
     return ui_thread_id is not None and current_thread_id == ui_thread_id
 
 
-def task_layout(tasks: list[Any]) -> list[tuple[str, str]]:
+def task_layout(tasks: list[Any]) -> list[tuple[int, str, str]]:
     """Build the sidebar entries for a sequential pipeline.
 
-    For each task that has an assigned agent, return a ``(heading, role)``
-    pair in pipeline order. ``heading`` is the task's display name
-    (``Task.name``), falling back to the agent role when a task carries no
-    name; ``role`` is the agent role shown on the task's status row. Because
-    the heading is per-task rather than per-agent, an agent that runs more than
-    one task in the pipeline gets a distinct heading for each.
+    For each task that has an assigned agent, return a
+    ``(crew_index, heading, role)`` triple in pipeline order. ``crew_index`` is
+    the task's position in ``tasks`` - carried so the caller can map a crew-task
+    index (which callbacks fire by) to its sidebar row, since agent-less tasks
+    are skipped and the two indices otherwise diverge. ``heading`` is the task's
+    display name (``Task.name``), falling back to the agent role when a task
+    carries no name; ``role`` is the agent role shown on the task's status row.
+    Because the heading is per-task rather than per-agent, an agent that runs
+    more than one task in the pipeline gets a distinct heading for each.
 
     Tasks with no agent are skipped, so a partially-wired crew never raises.
     """
-    layout: list[tuple[str, str]] = []
-    for task in tasks:
+    layout: list[tuple[int, str, str]] = []
+    for crew_index, task in enumerate(tasks):
         agent = getattr(task, "agent", None)
         if agent is None:
             continue
         role = agent.role
-        layout.append((task.name or role, role))
+        layout.append((crew_index, task.name or role, role))
     return layout
 
 

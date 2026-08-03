@@ -130,6 +130,11 @@ class CrewAIPipelineTUI(App[None]):
         self._on_complete = on_complete
         self._get_token_cost = get_token_cost
         self._task_widgets: list[tuple[Label, Label]] = []
+        # crew-task index -> sidebar-row index. Rows exist only for agent-bearing
+        # tasks (task_layout skips the rest), but callbacks fire by crew-task
+        # index, so the two diverge whenever a task has no agent; this map keeps
+        # the running/done marks on the right row.
+        self._row_of_task: dict[int, int] = {}
         # Agent Session: each agent turn is a bordered container (.agent-turn)
         # holding the agent's text (an .agent-text Static that output accumulates
         # into) plus any tool-call boxes, mounted in the order they happen.
@@ -187,10 +192,11 @@ class CrewAIPipelineTUI(App[None]):
             with Vertical(id="sidebar"):
                 yield Label(self._pipeline_name, id="sidebar-title")
 
-                for heading, role in task_layout(self._crew.tasks):
+                for crew_idx, heading, role in task_layout(self._crew.tasks):
                     yield Label(heading, classes="phase-heading")
                     name_lbl = Label(role, classes="task-name")
                     status_lbl = Label("Waiting", classes="task-status")
+                    self._row_of_task[crew_idx] = len(self._task_widgets)
                     self._task_widgets.append((name_lbl, status_lbl))
                     yield name_lbl
                     yield status_lbl
@@ -435,25 +441,31 @@ class CrewAIPipelineTUI(App[None]):
 
     def _set_task_running(self, idx: int) -> None:
         # A running task is a fresh agent turn: open its box so its role/model
-        # titles the border and its output streams in below.
+        # titles the border and its output streams in below. idx is a crew-task
+        # index; the sidebar row is looked up through the map (None for an
+        # agent-less task, which has no row).
         self._current_task_idx = idx
         self._open_agent_turn(idx)
-        if idx < len(self._task_widgets):
-            name_lbl, status_lbl = self._task_widgets[idx]
+        row = self._row_of_task.get(idx)
+        if row is not None:
+            name_lbl, status_lbl = self._task_widgets[row]
             name_lbl.add_class("running")
             status_lbl.add_class("running")
             status_lbl.update("Running...")
 
     def _set_task_done(self, idx: int) -> None:
-        if idx < len(self._task_widgets):
-            name_lbl, status_lbl = self._task_widgets[idx]
+        row = self._row_of_task.get(idx)
+        if row is not None:
+            name_lbl, status_lbl = self._task_widgets[row]
             name_lbl.remove_class("running")
             name_lbl.add_class("done")
             status_lbl.remove_class("running")
             status_lbl.add_class("done")
             status_lbl.update("Done")
+        # Advance by crew-task index (not row) so the chain still reaches the
+        # next agent-bearing task across any agent-less one between them.
         next_idx = idx + 1
-        if next_idx < len(self._task_widgets):
+        if next_idx < len(self._crew.tasks):
             self._set_task_running(next_idx)
 
     def _on_done(self, result: object) -> None:

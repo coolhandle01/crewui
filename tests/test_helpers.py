@@ -89,25 +89,28 @@ class TestTaskLayout:
         assert task_layout([]) == []
 
     def test_uses_task_name_as_heading_and_role_as_row(self) -> None:
-        assert task_layout([_task("Reconnaissance", "scout")]) == [("Reconnaissance", "scout")]
+        # Each entry carries the task's crew-task index (0 here).
+        assert task_layout([_task("Reconnaissance", "scout")]) == [(0, "Reconnaissance", "scout")]
 
     def test_one_agent_two_tasks_keep_distinct_headings(self) -> None:
-        # One agent runs two phases: same role, distinct per-task names.
+        # One agent runs two phases: same role, distinct per-task names, indices 0/1.
         layout = task_layout(
             [
                 _task("Research", "analyst"),
                 _task("Triage", "analyst"),
             ]
         )
-        assert layout == [("Research", "analyst"), ("Triage", "analyst")]
+        assert layout == [(0, "Research", "analyst"), (1, "Triage", "analyst")]
 
     def test_missing_name_falls_back_to_role(self) -> None:
         # A task with no name (None) uses the agent role as the heading.
-        assert task_layout([_task(None, "scribe")]) == [("scribe", "scribe")]
+        assert task_layout([_task(None, "scribe")]) == [(0, "scribe", "scribe")]
 
-    def test_task_without_agent_is_skipped(self) -> None:
+    def test_task_without_agent_keeps_the_real_crew_index(self) -> None:
+        # The skipped Orphan is at index 0, so Recon keeps its true crew index 1 -
+        # this is the divergence the crew-index -> row map relies on.
         layout = task_layout([_task("Orphan", None), _task("Recon", "scout")])
-        assert layout == [("Recon", "scout")]
+        assert layout == [(1, "Recon", "scout")]
 
 
 class TestFormatMetricsBlock:
