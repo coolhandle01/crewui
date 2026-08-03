@@ -98,7 +98,9 @@ class FeedbackArea(TextArea):
         if event.key in self._NEWLINE_KEYS:
             event.stop()
             event.prevent_default()
-            self.insert("\n")
+            # replace (not insert) so a newline overwrites an active selection,
+            # matching how a printable key behaves.
+            self.replace("\n", *self.selection)
             return
         await super()._on_key(event)
 

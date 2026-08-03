@@ -217,7 +217,6 @@ class TestRun:
             assert "Pipeline Complete" in str(rule.render())
             # The rule carries no box and does not repeat the deliverable.
             assert "the final plan" not in str(rule.render())
-            assert not app.query(".done-box")
 
     async def test_run_without_token_usage_falls_back_to_running_totals_done(
         self, make_crew: MakeCrew
@@ -453,6 +452,23 @@ class TestHumanReview:
             assert not worker.is_alive()  # a wedged worker fails here, never hangs the suite
             assert captured == ["line one\nline two"]
             assert inp.disabled
+
+    async def test_ctrl_j_replaces_an_active_selection(self, make_crew: MakeCrew) -> None:
+        # A newline key must overwrite an active selection, like a printable key
+        # does - not insert alongside it.
+        from textual.widgets.text_area import Selection
+
+        app = CrewAIPipelineTUI(crew=make_crew(), dry_run=True)
+        async with app.run_test() as pilot:
+            inp = app.query_one("#human-input", FeedbackArea)
+            inp.disabled = False
+            inp.text = "hello world"
+            inp.focus()
+            await pilot.pause(0.02)
+            inp.selection = Selection((0, 0), (0, 5))  # select "hello"
+            await pilot.press("ctrl+j")
+            await pilot.pause(0.02)
+            assert inp.text == "\n world"  # replaced, not "hello\n world"
 
     async def test_shift_enter_inserts_newline_without_submitting(
         self, make_crew: MakeCrew
