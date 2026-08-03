@@ -794,7 +794,14 @@ class CrewAIPipelineTUI(App[None]):
         inp.focus()
 
     def on_feedback_area_submitted(self, event: FeedbackArea.Submitted) -> None:
-        if self._feedback_event is None:
+        # Claim the gate atomically: swap the event out before doing any work, so
+        # a duplicate Submitted (a double-tapped or auto-repeated Enter posts one
+        # per keypress, and disabling the box does not retract already-queued
+        # messages) finds None and returns. Without this the duplicate overwrites
+        # _feedback_value - and once the next gate has opened, answers *it* with
+        # the previous round's text before the operator sees it.
+        gate, self._feedback_event = self._feedback_event, None
+        if gate is None:
             return
         self._feedback_value = event.value
         # Echo the operator's turn into the session so every round is visible:
@@ -805,7 +812,7 @@ class CrewAIPipelineTUI(App[None]):
         inp.text = ""
         inp.disabled = True
         inp.placeholder = "Human review (idle)"
-        self._feedback_event.set()
+        gate.set()
 
 
 def _make_tui_human_input_provider(app: CrewAIPipelineTUI) -> SyncHumanInputProvider:

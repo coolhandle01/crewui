@@ -286,6 +286,30 @@ class TestHumanReview:
             assert inp.disabled
             assert inp.text == ""
 
+    async def test_duplicate_submit_does_not_re_resolve_or_echo_twice(
+        self, make_crew: MakeCrew
+    ) -> None:
+        # A double-tapped Enter posts two Submitted messages for one gate. The
+        # first resolves it; the queued duplicate must be a no-op - not overwrite
+        # the answer (which, once the next gate opens, is how the previous
+        # round's text silently answers the next review) and not echo twice.
+        app = CrewAIPipelineTUI(crew=make_crew())
+        async with app.run_test() as pilot:
+            app._feedback_event = threading.Event()
+            app._feedback_value = ""
+            app._open_feedback_gate()
+            await pilot.pause(0.05)
+            app.on_feedback_area_submitted(FeedbackArea.Submitted("first"))
+            await pilot.pause(0.05)
+            assert app._feedback_value == "first"
+            assert app._feedback_event is None  # the gate is claimed
+            assert len(app.query(".you-box")) == 1
+            # The queued duplicate lands next - it must change nothing.
+            app.on_feedback_area_submitted(FeedbackArea.Submitted("second"))
+            await pilot.pause(0.05)
+            assert app._feedback_value == "first"  # not overwritten
+            assert len(app.query(".you-box")) == 1  # not echoed twice
+
     async def test_empty_submit_accepts_the_result_as_is(self, make_crew: MakeCrew) -> None:
         app = CrewAIPipelineTUI(crew=make_crew())
         async with app.run_test() as pilot:
