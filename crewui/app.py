@@ -749,7 +749,9 @@ class CrewAIPipelineTUI(App[None]):
         # is unreachable in-process - exercised by the subprocess smoke test.
         self._restore_terminal()  # pragma: no cover
         self._kill_run_children()  # pragma: no cover
-        os._exit(0)  # pragma: no cover
+        # 130 (128 + SIGINT), the interrupt convention: break-glass aborts the
+        # run, so a wrapper or CI step must not read the exit as a clean 0.
+        os._exit(130)  # pragma: no cover
 
     def _restore_terminal(self) -> None:
         """Put the terminal back before a hard exit.
